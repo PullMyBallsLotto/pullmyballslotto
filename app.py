@@ -135,7 +135,8 @@ def get_latest_powerball_draw_detail():
             return None
         detail_url = "https://www.powerball.com" + m.group(1)
         dhtml = requests.get(detail_url, timeout=20).text
-        soup = BeautifulSoup(dhtml, "lxml")
+soup = BeautifulSoup(dhtml, "html.parser")
+
 
         # Draw date (headline often present)
         date_text = None
