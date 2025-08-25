@@ -32,8 +32,10 @@ import pandas as pd
 import requests
 try:
     from bs4 import BeautifulSoup  # type: ignore
+    BS4_AVAILABLE = True
 except Exception:  # bs4 may be unavailable in minimal envs / Pyodide
     BeautifulSoup = None  # type: ignore
+    BS4_AVAILABLE = False
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 try:  # pragma: no cover - optional in test env
@@ -127,8 +129,8 @@ HTTP_TIMEOUT = 15
 def _html_to_text(html: str) -> str:
     try:
         # cheap tag stripper; keeps line breaks to help regex parsing
-        return re.sub(r"<[^>]+>", "
-", html)
+        return re.sub(r'<[^>]+>', '
+', html)
     except Exception:
         return html
 
@@ -771,10 +773,10 @@ def main() -> None:  # pragma: no cover - UI only
             st.subheader("Latest Powerball Detail (best-effort)")
             st.write({"date": ld.date_text, "est_jackpot": ld.est_jackpot_str, "cash_value": ld.cash_value_str, "match5_states": ", ".join(ld.states_match5) if ld.states_match5 else None, "tiers": ld.tiers[:5], "url": ld.detail_url})
             if ld.detail_url:
-                st.markdown(f"[Open detail page]({ld.detail_url})")
-        else:
-            st.warning("Could not retrieve the latest draw detail right now.")
-        st.markdown(f"Ticket cutoff varies by state. Example: [Florida info]({FL_PB}).")
+                st.caption(f"HTML parser: {'BeautifulSoup' if BS4_AVAILABLE else 'regex fallback'}")
+        st.markdown(
+            f"Ticket cutoff varies by state. Example: [Florida info]({FL_PB})."
+        )
 
     with tab_stats:
         if df_pb.empty:
@@ -1116,3 +1118,10 @@ def test_et_offset_standard_time_fallback_tolerant():
     # Jan is standard time in New York; fallback tz returns -05:00, real tz returns -05:00
     dt = datetime(2025, 1, 6, 12, 0, tzinfo=app.ET)
     assert dt.utcoffset() in (timedelta(hours=-5), timedelta(hours=-5))
+
+
+def test_html_to_text_strips_tags():
+    html = "<h1>Title</h1><p>A<br/>B</p>"
+    txt = app._html_to_text(html)
+    assert "Title" in txt and "A" in txt and "B" in txt
+    assert "<" not in txt and ">" not in txt
