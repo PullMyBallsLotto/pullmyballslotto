@@ -1,22 +1,6 @@
 # file: app.py
-# --- requirements.txt (copy/paste) ---
-# streamlit==1.37.1
-# pandas==2.2.2
-# numpy==2.0.1
-# requests==2.32.3
-# matplotlib==3.9.0
-# seaborn==0.13.2
-# python-dateutil==2.9.0.post0
-# streamlit-autorefresh==1.0.1
-# beautifulsoup4==4.12.3
-# tzdata==2024.1   # <— add this to fix ZoneInfo on minimal/Pyodide-like envs
-"""PullMyBallsLotto • Lottery Stats Explorer (Educational)
-
-Adds Power Play weighted distribution preset (official-ish), auto 10× cap by jackpot,
-EV metrics, Pick Builder, and CSV export of simulation results (Pro only).
-"""
 from __future__ import annotations
-# Allow `import app` to resolve to this module when run as a single file (e.g., Pyodide/REPL)
+# Allow `import app` to resolve to this module when run as a single file (e.g., REPL/Pyodide)
 import sys as _app_sys
 _app_sys.modules.setdefault("app", _app_sys.modules[__name__])
 
@@ -24,32 +8,32 @@ import itertools
 import re
 from collections import Counter
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
 import requests
-try:
-    from bs4 import BeautifulSoup  # type: ignore
-    BS4_AVAILABLE = True
-except Exception:  # bs4 may be unavailable in minimal envs / Pyodide
-    BeautifulSoup = None  # type: ignore
-    BS4_AVAILABLE = False
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-try:  # pragma: no cover - optional in test env
+# Streamlit (optional at import time)
+try:  # pragma: no cover
     import streamlit as st
     from streamlit_autorefresh import st_autorefresh
 except Exception:  # pragma: no cover
     st = None  # type: ignore
 
-# -------- Timezone bootstrap (Pyodide/tzdata safe) --------
+# BeautifulSoup optional (safe fallback without bs4)
+try:
+    from bs4 import BeautifulSoup  # type: ignore
+    BS4_AVAILABLE = True
+except Exception:
+    BeautifulSoup = None  # type: ignore
+    BS4_AVAILABLE = False
 
+# -------- Timezone bootstrap (Pyodide/tzdata safe) --------
 def _ensure_tzdata_loaded_for_pyodide() -> None:
-    """Load tzdata when running under Pyodide so ZoneInfo works.
-    Best-effort: silently continues if not applicable or already available.
-    """
+    """Load tzdata in Pyodide so ZoneInfo works (best-effort)."""
     try:
         import tzdata  # noqa: F401
         return
@@ -72,12 +56,10 @@ def _ensure_tzdata_loaded_for_pyodide() -> None:
             if not loop.is_running():
                 loop.run_until_complete(_load())
     except Exception:
-        # Best-effort only: fall back handled below.
+        # Best-effort only.
         pass
 
-
 def _get_et_zone():
-    from datetime import timezone, timedelta
     try:
         return ZoneInfo("America/New_York")
     except ZoneInfoNotFoundError:
@@ -85,14 +67,14 @@ def _get_et_zone():
         try:
             return ZoneInfo("America/New_York")
         except Exception:
-            # Fallback to fixed offset (standard time) to avoid crashes in sandboxed envs.
+            # Fallback to fixed offset (standard time) to avoid crashes
             return timezone(timedelta(hours=-5))
-
 
 # ---------------------- Globals ----------------------
 ET = _get_et_zone()
-DRAW_DAYS_PB = {0, 2, 5}
+DRAW_DAYS_PB = {0, 2, 5}  # Mon, Wed, Sat
 DRAW_HOUR, DRAW_MIN = 22, 59
+
 MATRIX_CUTOFF_PB = pd.to_datetime("2015-10-04").date()
 MATRIX_CUTOFF_MM = pd.to_datetime("2017-10-31").date()
 
@@ -103,6 +85,7 @@ NY_PB_CSV = "https://data.ny.gov/api/views/d6yy-54nr/rows.csv?accessType=DOWNLOA
 NY_MM_CSV = "https://data.ny.gov/api/views/5xaw-6ayf/rows.csv?accessType=DOWNLOAD"
 FL_PB = "https://floridalottery.com/games/draw-games/powerball"
 
+# Gumroad secrets (optional)
 PRODUCT_IDS_RAW = ""
 PRODUCT_IDS: List[str] = []
 DEMO_ONLY = False
@@ -114,28 +97,23 @@ if st is not None:
     except Exception:
         pass
 
+# HTTP session
 SESSION = requests.Session()
-SESSION.headers.update(
-    {
-        "User-Agent": (
-            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/124.0 Safari/537.36"
-        )
-    }
-)
+SESSION.headers.update({
+    "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                  "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+})
 HTTP_TIMEOUT = 15
 
 # -------- Minimal HTML->text fallback when BeautifulSoup isn't available --------
 def _html_to_text(html: str) -> str:
     try:
         # cheap tag stripper; keeps line breaks to help regex parsing
-        return re.sub(r'<[^>]+>', '
-', html)
+        return re.sub(r'<[^>]+>', '\\n', html)  # literal backslash+n
     except Exception:
         return html
 
 # ---------------------- License ----------------------
-
 def verify_gumroad_license(license_key: str) -> bool:
     if not PRODUCT_IDS or not license_key:
         return False
@@ -166,7 +144,6 @@ POWERBALL_PRIZES: Dict[Tuple[int, bool], int | str] = {
     (0, True): 4,
 }
 
-
 def prize_for_result(match_white: int, pb_matched: bool, jackpot_estimate: Optional[int]) -> int:
     val = POWERBALL_PRIZES.get((match_white, pb_matched), 0)
     if val == "JACKPOT":
@@ -174,7 +151,6 @@ def prize_for_result(match_white: int, pb_matched: bool, jackpot_estimate: Optio
     return int(val)
 
 # ---------------------- Helpers ----------------------
-
 def to_table(counter: Counter, domain_range: Iterable[int]) -> pd.DataFrame:
     total = sum(counter.get(n, 0) for n in domain_range)
     rows = []
@@ -184,12 +160,10 @@ def to_table(counter: Counter, domain_range: Iterable[int]) -> pd.DataFrame:
         rows.append({"number": n, "count": c, "percent": round(pct, 3)})
     return pd.DataFrame(rows)
 
-
 def freq_counts(df: pd.DataFrame) -> Tuple[Counter, Counter]:
     whites = list(itertools.chain.from_iterable(df.get("W", []).tolist())) if not df.empty else []
     reds = df.get("R", pd.Series([], dtype=int)).tolist() if not df.empty else []
     return Counter(whites), Counter(reds)
-
 
 def pairs_triplets(df: pd.DataFrame) -> Tuple[Counter, Counter]:
     pair_counts, trip_counts = Counter(), Counter()
@@ -201,7 +175,6 @@ def pairs_triplets(df: pd.DataFrame) -> Tuple[Counter, Counter]:
             trip_counts[(a, b, c)] += 1
     return pair_counts, trip_counts
 
-
 def pair_matrix(pair_counts: Counter, max_white: int) -> np.ndarray:
     mat = np.zeros((max_white, max_white), dtype=int)
     for (a, b), cnt in pair_counts.items():
@@ -211,7 +184,6 @@ def pair_matrix(pair_counts: Counter, max_white: int) -> np.ndarray:
     return mat
 
 # ---------------------- Time ----------------------
-
 def next_powerball_draw(now: Optional[datetime] = None) -> datetime:
     if now is None:
         now = datetime.now(ET)
@@ -225,7 +197,6 @@ def next_powerball_draw(now: Optional[datetime] = None) -> datetime:
     return fallback.replace(hour=DRAW_HOUR, minute=DRAW_MIN, second=0, microsecond=0)
 
 # ---------------------- Scrape ----------------------
-
 def get_powerball_jackpot_estimate() -> Optional[int]:
     try:
         html = SESSION.get(POWERBALL_HOME, timeout=HTTP_TIMEOUT).text
@@ -238,7 +209,6 @@ def get_powerball_jackpot_estimate() -> Optional[int]:
     except Exception:
         return None
 
-
 @dataclass
 class LatestDraw:
     date_text: Optional[str]
@@ -247,7 +217,6 @@ class LatestDraw:
     states_match5: List[str]
     tiers: List[Dict[str, object]]
     detail_url: Optional[str]
-
 
 def get_latest_powerball_draw_detail() -> Optional[LatestDraw]:
     try:
@@ -270,8 +239,7 @@ def get_latest_powerball_draw_detail() -> Optional[LatestDraw]:
         dhtml = SESSION.get(detail_url, timeout=HTTP_TIMEOUT).text
         if BeautifulSoup is not None:
             soup = BeautifulSoup(dhtml, "html.parser")
-            page_txt = soup.get_text("
-", strip=True)
+            page_txt = soup.get_text("\n", strip=True)
         else:
             soup = None
             page_txt = _html_to_text(dhtml)
@@ -321,20 +289,22 @@ def get_latest_powerball_draw_detail() -> Optional[LatestDraw]:
     try:
         gp = re.search(r"\b(\d+)\s+Grand Prize\b", page_txt, re.I)
         if gp:
-            tiers.append(
-                {"label": "5+PB", "pb_winners": int(gp.group(1)), "pb_prize": "Jackpot", "pp_winners": None, "pp_prize": None}
-            )
+            tiers.append({
+                "label": "5+PB",
+                "pb_winners": int(gp.group(1)),
+                "pb_prize": "Jackpot",
+                "pp_winners": None,
+                "pp_prize": None,
+            })
         for m2 in re.finditer(r"\n\s*(\d+)\s+\$([\d,]+)\s+(\d+)\s+\$([\d,]+)", page_txt):
             pbw, pbp, ppw, ppp = m2.groups()
-            tiers.append(
-                {
-                    "label": "(tier)",
-                    "pb_winners": int(pbw),
-                    "pb_prize": f"${pbp}",
-                    "pp_winners": int(ppw),
-                    "pp_prize": f"${ppp}",
-                }
-            )
+            tiers.append({
+                "label": "(tier)",
+                "pb_winners": int(pbw),
+                "pb_prize": f"${pbp}",
+                "pp_winners": int(ppw),
+                "pp_prize": f"${ppp}",
+            })
     except Exception:
         tiers = []
 
@@ -348,14 +318,12 @@ def get_latest_powerball_draw_detail() -> Optional[LatestDraw]:
     )
 
 # ---------------------- Data loaders ----------------------
-
 def _parse_whites_red_from_text(s: str) -> Optional[Tuple[List[int], int]]:
     nums = [int(x) for x in re.findall(r"\d+", s)]
     if len(nums) < 6:
         return None
     whites, red = nums[:5], int(nums[5])
     return whites, red
-
 
 def _normalize_df(df: pd.DataFrame, white_max: int, red_max: int, cutoff_date: datetime.date) -> pd.DataFrame:
     if df.empty:
@@ -371,19 +339,18 @@ def _normalize_df(df: pd.DataFrame, white_max: int, red_max: int, cutoff_date: d
     ]
     return df.sort_values("draw_date").reset_index(drop=True)
 
-
 if st is not None:
     cache_data = st.cache_data
-else:  # pragma: no cover - testing fallback
+else:  # testing/CLI fallback
     def cache_data(*dargs, **dkwargs):
         def deco(fn):
             return fn
         return deco
 
-
 @cache_data(ttl=600, show_spinner=False)
 def load_powerball() -> pd.DataFrame:
     rows: List[Dict[str, int | datetime.date]] = []
+    # Try Texas CSV (flexible schema)
     try:
         tx = pd.read_csv(TX_PB_CSV, dtype=str, engine="python", on_bad_lines="skip")
         date_col = None
@@ -410,7 +377,7 @@ def load_powerball() -> pd.DataFrame:
                     continue
     except Exception:
         pass
-
+    # Fallback NY Open Data
     if not rows:
         try:
             ny = pd.read_csv(NY_PB_CSV)
@@ -427,10 +394,8 @@ def load_powerball() -> pd.DataFrame:
                 rows.append({"date": d, "w1": whites[0], "w2": whites[1], "w3": whites[2], "w4": whites[3], "w5": whites[4], "r": red})
         except Exception:
             pass
-
     df = pd.DataFrame(rows)
     return _normalize_df(df, white_max=69, red_max=26, cutoff_date=MATRIX_CUTOFF_PB)
-
 
 @cache_data(ttl=600, show_spinner=False)
 def load_megamillions() -> pd.DataFrame:
@@ -450,7 +415,6 @@ def load_megamillions() -> pd.DataFrame:
             rows.append({"date": d, "w1": whites[0], "w2": whites[1], "w3": whites[2], "w4": whites[3], "w5": whites[4], "r": mega})
     except Exception:
         pass
-
     df = pd.DataFrame(rows)
     return _normalize_df(df, white_max=70, red_max=25, cutoff_date=MATRIX_CUTOFF_MM)
 
@@ -459,16 +423,13 @@ def load_megamillions() -> pd.DataFrame:
 class Pick:
     whites: Tuple[int, int, int, int, int]
     red: int
-
     def normalized(self) -> "Pick":
         return Pick(tuple(sorted(self.whites)), int(self.red))
-
 
 # Official-ish Power Play weights (approx.)
 POWER_PLAY_10X_CAP = 150_000_000  # 10× available only when jackpot ≤ cap
 PP_WEIGHTS_WITH_10X = {2: 0.557, 3: 0.303, 4: 0.070, 5: 0.047, 10: 0.023}
-PP_WEIGHTS_NO_10X = {2: 0.571, 3: 0.309, 4: 0.069, 5: 0.051}
-
+PP_WEIGHTS_NO_10X   = {2: 0.571, 3: 0.309, 4: 0.069, 5: 0.051}
 
 def _score_pick(draw_w: Sequence[int], draw_r: int, pick: Pick, jackpot_estimate: Optional[int]) -> Tuple[Tuple[int, bool], int]:
     w_matches = len(set(draw_w).intersection(pick.whites))
@@ -476,15 +437,12 @@ def _score_pick(draw_w: Sequence[int], draw_r: int, pick: Pick, jackpot_estimate
     prize = prize_for_result(w_matches, r_match, jackpot_estimate)
     return (w_matches, r_match), prize
 
-
 def _effective_allow_10x(pp_allow_10x: bool, pp_auto_10x_cap: bool, jackpot_estimate: Optional[int], cap: int) -> bool:
     if not pp_allow_10x:
         return False
     if not pp_auto_10x_cap:
         return True
-    je = jackpot_estimate or 0
-    return je <= cap
-
+    return (jackpot_estimate or 0) <= cap
 
 def _draw_power_play_multiplier(
     rng: np.random.Generator,
@@ -502,14 +460,12 @@ def _draw_power_play_multiplier(
         return int(max(2, min(10, fixed)))
     # weighted
     weights = dict(weights_with_10x if allow_10x else weights_no_10x)
-    # filter + normalize
     ps = [weights[o] for o in options]
     total = float(sum(ps))
     if total <= 0:
         return 2
     ps = [p / total for p in ps]
     return int(rng.choice(options, p=ps))
-
 
 def _apply_power_play(prize: int, tier: Tuple[int, bool], multiplier: int) -> int:
     w_matches, r_match = tier
@@ -518,7 +474,6 @@ def _apply_power_play(prize: int, tier: Tuple[int, bool], multiplier: int) -> in
     if w_matches == 5 and r_match:
         return prize
     return int(prize * multiplier)
-
 
 def simulate_strategy(
     picks: Sequence[Tuple[Sequence[int], int]] | Sequence[Pick],
@@ -529,7 +484,7 @@ def simulate_strategy(
     jackpot_estimate: Optional[int] = None,
     seed: Optional[int] = None,
     power_play: bool = False,
-    pp_mode: str = "uniform",  # "uniform" | "weighted" | "fixed" ("random" alias of uniform)
+    pp_mode: str = "uniform",  # "uniform" | "weighted" | "fixed"
     pp_fixed_multiplier: int = 2,
     pp_allow_10x: bool = True,
     pp_auto_10x_cap: bool = True,
@@ -605,7 +560,6 @@ def simulate_strategy(
     return result
 
 # ---------------------- CSV helpers ----------------------
-
 def simulation_to_csvs(res: Dict[str, object], *, draws: int, num_picks: int) -> Tuple[pd.DataFrame, pd.DataFrame]:
     tiers = res.get("overall", {}).get("tier_counts", {})  # type: ignore[assignment]
     rows = []
@@ -616,24 +570,19 @@ def simulation_to_csvs(res: Dict[str, object], *, draws: int, num_picks: int) ->
     tiers_df = pd.DataFrame(rows)
 
     ov = res.get("overall", {})  # type: ignore[assignment]
-    metrics_df = pd.DataFrame(
-        [
-            {
-                "gross_ev_per_draw": ov.get("gross_ev_per_draw", 0.0),
-                "cost_per_play": ov.get("cost_per_play", 0.0),
-                "net_ev_per_draw": ov.get("net_ev_per_draw", 0.0),
-                "power_play_used": ov.get("power_play_used", False),
-                "pp_mode": ov.get("pp_mode", ""),
-                "pp_allow_10x": ov.get("pp_allow_10x", False),
-                "draws": draws,
-                "num_picks": num_picks,
-            }
-        ]
-    )
+    metrics_df = pd.DataFrame([{
+        "gross_ev_per_draw": ov.get("gross_ev_per_draw", 0.0),
+        "cost_per_play": ov.get("cost_per_play", 0.0),
+        "net_ev_per_draw": ov.get("net_ev_per_draw", 0.0),
+        "power_play_used": ov.get("power_play_used", False),
+        "pp_mode": ov.get("pp_mode", ""),
+        "pp_allow_10x": ov.get("pp_allow_10x", False),
+        "draws": draws,
+        "num_picks": num_picks,
+    }])
     return tiers_df, metrics_df
 
 # ---------------------- UI ----------------------
-
 def _parse_user_picks(text: str) -> List[Tuple[List[int], int]]:
     picks: List[Tuple[List[int], int]] = []
     for line in text.splitlines():
@@ -641,8 +590,8 @@ def _parse_user_picks(text: str) -> List[Tuple[List[int], int]]:
         if not s:
             continue
         s = s.replace("|", " ").replace(",", " ")
-        nums = []
-        buf = []
+        nums: List[int] = []
+        buf: List[str] = []
         for ch in s:
             if ch.isdigit():
                 buf.append(ch)
@@ -658,7 +607,6 @@ def _parse_user_picks(text: str) -> List[Tuple[List[int], int]]:
         picks.append((whites, red))
     return picks
 
-
 def _format_timedelta(td: timedelta) -> str:
     total = int(td.total_seconds())
     if total < 0:
@@ -667,13 +615,11 @@ def _format_timedelta(td: timedelta) -> str:
     m, s = divmod(rem, 60)
     return f"{h:02d}:{m:02d}:{s:02d}"
 
-
 def _picks_to_csv_rows(picks: List[Tuple[List[int], int]]) -> pd.DataFrame:
     rows = []
     for whites, r in picks:
         rows.append({"w1": whites[0], "w2": whites[1], "w3": whites[2], "w4": whites[3], "w5": whites[4], "r": r})
     return pd.DataFrame(rows)
-
 
 def _parse_picks_csv(file) -> List[Tuple[List[int], int]]:
     try:
@@ -694,8 +640,8 @@ def _parse_picks_csv(file) -> List[Tuple[List[int], int]]:
         for _, rec in df.iterrows():
             try:
                 s = str(rec[cols["w"]])
-                nums = []
-                buf = []
+                nums: List[int] = []
+                buf: List[str] = []
                 for ch in s:
                     if ch.isdigit():
                         buf.append(ch)
@@ -715,7 +661,6 @@ def _parse_picks_csv(file) -> List[Tuple[List[int], int]]:
         for _, rec in df.iterrows():
             out.extend(_parse_user_picks(str(rec[cols["pick"]])))
     return out
-
 
 def main() -> None:  # pragma: no cover - UI only
     if st is None:
@@ -738,9 +683,10 @@ def main() -> None:  # pragma: no cover - UI only
     st.title("PullMyBallsLotto • Lottery Stats Explorer")
     st.caption("Educational only. Not affiliated with any lottery commission.")
 
+    # Optional license gate (soft)
     colL, colR = st.columns([1, 2])
     with colL:
-        license_key = st.text_input("License key (Gumroad)", type="password")
+        license_key = st.text_input("License key (Gumroad)", type="password", help="Optional; unlock Pro if configured.")
         licensed = verify_gumroad_license(license_key) if license_key else False
         if DEMO_ONLY and not licensed:
             st.info("Demo mode: some features may be limited.")
@@ -756,10 +702,12 @@ def main() -> None:  # pragma: no cover - UI only
         except Exception:
             pass
 
+    # Jackpot estimate (best-effort)
     jp = get_powerball_jackpot_estimate()
     if jp:
         st.info(f"Estimated Jackpot: ${jp:,}")
 
+    # Data
     with st.spinner("Loading datasets…"):
         df_pb = load_powerball()
         df_mm = load_megamillions()
@@ -771,12 +719,20 @@ def main() -> None:  # pragma: no cover - UI only
         ld = get_latest_powerball_draw_detail()
         if ld:
             st.subheader("Latest Powerball Detail (best-effort)")
-            st.write({"date": ld.date_text, "est_jackpot": ld.est_jackpot_str, "cash_value": ld.cash_value_str, "match5_states": ", ".join(ld.states_match5) if ld.states_match5 else None, "tiers": ld.tiers[:5], "url": ld.detail_url})
+            st.write({
+                "date": ld.date_text,
+                "est_jackpot": ld.est_jackpot_str,
+                "cash_value": ld.cash_value_str,
+                "match5_states": ", ".join(ld.states_match5) if ld.states_match5 else None,
+                "tiers": ld.tiers[:5],
+                "url": ld.detail_url,
+            })
             if ld.detail_url:
-                st.caption(f"HTML parser: {'BeautifulSoup' if BS4_AVAILABLE else 'regex fallback'}")
-        st.markdown(
-            f"Ticket cutoff varies by state. Example: [Florida info]({FL_PB})."
-        )
+                st.markdown(f"[Open detail page]({ld.detail_url})")
+        else:
+            st.warning("Could not retrieve the latest draw detail right now.")
+        st.caption(f"HTML parser: {'BeautifulSoup' if BS4_AVAILABLE else 'regex fallback'}")
+        st.markdown(f"Ticket cutoff varies by state. Example: [Florida info]({FL_PB}).")
 
     with tab_stats:
         if df_pb.empty:
@@ -800,7 +756,7 @@ def main() -> None:  # pragma: no cover - UI only
         # --- Pick Builder ---
         st.markdown("**Pick Builder (optional)**")
         if "built_picks" not in st.session_state:
-            st.session_state["built_picks"] = []
+            st.session_state["built_picks"] = []  # list of (whites, r)
         colb1, colb2, colb3 = st.columns([3, 2, 2])
         with colb1:
             sel_whites = st.multiselect("Select 5 white balls (1–69)", options=list(range(1, 70)), max_selections=5)
@@ -835,6 +791,7 @@ def main() -> None:  # pragma: no cover - UI only
         txt = st.text_area("Text picks (one per line)", value=example, height=90)
         picks_text = _parse_user_picks(txt)
 
+        # Unified picks (built + text, deduped)
         unified: List[Tuple[List[int], int]] = []
         seen = set()
         for src in (st.session_state["built_picks"], picks_text):
@@ -846,6 +803,7 @@ def main() -> None:  # pragma: no cover - UI only
 
         st.write(f"Total picks: **{len(unified)}**")
 
+        # --- Power Play & EV controls ---
         colpp1, colpp2, colpp3 = st.columns([1, 1, 2])
         with colpp1:
             enable_pp = st.checkbox("Enable Power Play (+$1/play)", value=False)
@@ -882,7 +840,6 @@ def main() -> None:  # pragma: no cover - UI only
                         pp_allow_10x=pp_allow_10x,
                         pp_auto_10x_cap=auto_cap,
                     )
-
                     met1, met2, met3 = st.columns(3)
                     with met1:
                         st.metric("Gross EV per draw", f"${res['overall']['gross_ev_per_draw']:.4f}")
@@ -913,7 +870,6 @@ def main() -> None:  # pragma: no cover - UI only
                 except Exception as e:
                     st.exception(e)
 
-
 if __name__ == "__main__":
     if st is not None:
         main()
@@ -923,205 +879,3 @@ if __name__ == "__main__":
         out = simulate_strategy(picks, draws=1000, seed=0)
         print("CLI demo:", {"draws": out["draws"], "gross_ev_per_draw": out["overall"]["gross_ev_per_draw"]})
 
-
-
-# file: tests/test_app.py
-import types
-from datetime import datetime
-import numpy as np
-import pandas as pd
-import pytest
-
-import app
-
-
-class _Resp:
-    def __init__(self, text: str):
-        self.text = text
-
-
-def test_next_powerball_draw_on_the_minute():
-    monday = datetime(2025, 1, 6, 22, 59, tzinfo=app.ET)
-    got = app.next_powerball_draw(monday)
-    assert got == monday
-
-
-def test_prize_for_result_none_jackpot():
-    assert app.prize_for_result(5, True, None) == 0
-    assert app.prize_for_result(4, True, None) == 50_000
-
-
-def test_get_powerball_jackpot_estimate_parse_million(monkeypatch):
-    def fake_get(url, timeout=0):
-        return _Resp("Estimated Jackpot $25 Million")
-
-    monkeypatch.setattr(app, "SESSION", types.SimpleNamespace(get=fake_get))
-    assert app.get_powerball_jackpot_estimate() == 25_000_000
-
-
-def test_get_latest_powerball_draw_detail(monkeypatch):
-    def fake_get(url, timeout=0):
-        if "previous-results" in url:
-            return _Resp('<a href="/draw-result?date=2025-08-20&gc=powerball">link</a>')
-        else:
-            detail_html = (
-                "<h2>Wed, Aug 20, 2025</h2>"
-                "<div>Estimated Jackpot: $300 Million</div>"
-                "<div>Cash Value: $150 Million</div>"
-                "<div>Match 5 $1 Million Winners CA,NY</div>"
-                "<div>\n 0 $0  3 $150,000\n</div>"
-            )
-            return _Resp(detail_html)
-
-    monkeypatch.setattr(app, "SESSION", types.SimpleNamespace(get=fake_get))
-    ld = app.get_latest_powerball_draw_detail()
-    assert ld is not None
-    assert ld.date_text.startswith("Wed, Aug")
-    assert "Million" in (ld.est_jackpot_str or "")
-    assert ld.states_match5 == ["CA", "NY"]
-    assert any(t.get("pb_winners") == 0 for t in ld.tiers)
-
-
-def test_load_powerball_from_tx(monkeypatch):
-    real_read_csv = pd.read_csv
-
-    def fake_read_csv(arg, *a, **k):
-        if isinstance(arg, str) and arg == app.TX_PB_CSV:
-            df = pd.DataFrame({"Draw Date": ["2021-01-01", "2021-01-06"], "Winning Numbers": ["1 2 3 4 5 6", "10 20 30 40 50 14"]})
-            return df
-        return real_read_csv(arg, *a, **k)
-
-    monkeypatch.setattr(pd, "read_csv", fake_read_csv)
-    df = app.load_powerball()
-    assert not df.empty
-    assert {"W", "R", "draw_date"}.issubset(df.columns)
-
-
-def test_load_megamillions_from_ny(monkeypatch):
-    real_read_csv = pd.read_csv
-
-    def fake_read_csv(arg, *a, **k):
-        if isinstance(arg, str) and arg == app.NY_MM_CSV:
-            df = pd.DataFrame({"Draw Date": ["2021-11-02", "2022-01-01"], "Winning Numbers": ["1 2 3 4 5 6", "10 20 30 40 50 25"]})
-            return df
-        return real_read_csv(arg, *a, **k)
-
-    monkeypatch.setattr(pd, "read_csv", fake_read_csv)
-    df = app.load_megamillions()
-    assert not df.empty
-    assert df["R"].between(1, 25).all()
-
-
-def test_simulate_strategy_basic():
-    res = app.simulate_strategy([([1, 2, 3, 4, 5], 6)], draws=1000, seed=42)
-    assert res["draws"] == 1000
-    assert "gross_ev_per_draw" in res["overall"]
-
-
-def test_power_play_match5_no_pb_is_two_million(monkeypatch):
-    class FakeRNG:
-        def choice(self, arr, size=None, replace=None, p=None):
-            return np.array([1, 2, 3, 4, 5]) if size is not None else (10 if isinstance(arr, (list, np.ndarray)) else arr)
-
-        def integers(self, low, high, size=None):
-            return 6
-
-    monkeypatch.setattr(app.np.random, "default_rng", lambda seed=None: FakeRNG())
-
-    picks = [([1, 2, 3, 4, 5], 14)]  # 5+noPB
-    res = app.simulate_strategy(picks, draws=1, seed=123, power_play=True, pp_mode="fixed", pp_fixed_multiplier=5)
-    assert res["overall"]["total_prize"] == 2_000_000
-
-
-def test_power_play_multiplies_non_jackpot(monkeypatch):
-    class FakeRNG:
-        def choice(self, arr, size=None, replace=None, p=None):
-            return np.array([1, 2, 3, 4, 5]) if size is not None else (3 if isinstance(arr, (list, np.ndarray)) else arr)
-
-        def integers(self, low, high, size=None):
-            return 6
-
-    monkeypatch.setattr(app.np.random, "default_rng", lambda seed=None: FakeRNG())
-
-    picks = [([1, 2, 3, 4, 9], 6)]  # 4+PB => $50,000 * 3
-    res = app.simulate_strategy(picks, draws=1, seed=0, power_play=True, pp_mode="fixed", pp_fixed_multiplier=3)
-    assert res["overall"]["total_prize"] == 150_000
-
-
-def test_auto_disable_10x_cap(monkeypatch):
-    class FakeRNG:
-        def choice(self, arr, size=None, replace=None, p=None):
-            if size is not None:
-                return np.array([1, 2, 3, 4, 5])
-            # choose the max available multiplier (10 if allowed, else 5)
-            return max(arr)
-
-        def integers(self, low, high, size=None):
-            return 6
-
-    monkeypatch.setattr(app.np.random, "default_rng", lambda seed=None: FakeRNG())
-
-    # 4+PB base 50k; with cap active and jackpot high -> 10x disallowed -> expect 5x
-    picks = [([1, 2, 3, 4, 9], 6)]
-    res = app.simulate_strategy(
-        picks,
-        draws=1,
-        seed=0,
-        power_play=True,
-        pp_mode="weighted",
-        pp_allow_10x=True,
-        pp_auto_10x_cap=True,
-        jackpot_estimate=300_000_000,
-    )
-    assert res["overall"]["total_prize"] == 50_000 * 5
-
-    # With small jackpot -> 10x allowed -> expect 10x chosen by FakeRNG
-    res2 = app.simulate_strategy(
-        picks,
-        draws=1,
-        seed=0,
-        power_play=True,
-        pp_mode="weighted",
-        pp_allow_10x=True,
-        pp_auto_10x_cap=True,
-        jackpot_estimate=50_000_000,
-    )
-    assert res2["overall"]["total_prize"] == 50_000 * 10
-
-
-def test_simulation_to_csvs_probabilities_sum(monkeypatch):
-    class FakeRNG:
-        def choice(self, arr, size=None, replace=None, p=None):
-            return np.array([1, 2, 3, 4, 5]) if size is not None else (2 if isinstance(arr, (list, np.ndarray)) else arr)
-
-        def integers(self, low, high, size=None):
-            return 6
-
-    monkeypatch.setattr(app.np.random, "default_rng", lambda seed=None: FakeRNG())
-
-    picks = [([1, 2, 3, 4, 9], 6)]  # 4+PB always
-    draws = 1
-    res = app.simulate_strategy(picks, draws=draws, seed=0, power_play=False)
-    tiers_df, metrics_df = app.simulation_to_csvs(res, draws=draws, num_picks=1)
-    assert "tier" in tiers_df.columns and "probability_per_draw" in tiers_df.columns
-    assert abs(tiers_df.loc[0, "probability_per_draw"] - 1.0) < 1e-9
-
-
-def test_et_offset_standard_time():
-    from datetime import timedelta
-    dt = datetime(2025, 1, 6, 12, 0, tzinfo=app.ET)  # Jan is standard time
-    assert dt.utcoffset() == timedelta(hours=-5)
-
-
-def test_et_offset_standard_time_fallback_tolerant():
-    from datetime import timedelta
-    # Jan is standard time in New York; fallback tz returns -05:00, real tz returns -05:00
-    dt = datetime(2025, 1, 6, 12, 0, tzinfo=app.ET)
-    assert dt.utcoffset() in (timedelta(hours=-5), timedelta(hours=-5))
-
-
-def test_html_to_text_strips_tags():
-    html = "<h1>Title</h1><p>A<br/>B</p>"
-    txt = app._html_to_text(html)
-    assert "Title" in txt and "A" in txt and "B" in txt
-    assert "<" not in txt and ">" not in txt
