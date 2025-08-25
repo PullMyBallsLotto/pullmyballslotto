@@ -1,12 +1,25 @@
 # file: app.py
 """PullMyBallsLotto • Lottery Stats Explorer (Educational)
+# file: app.py
+"""PullMyBallsLotto • Lottery Stats Explorer (Educational)"""
+
+from __future__ import annotations
+
+# allow `import app` when running as a single file/REPL
+import sys as _app_sys
+_app_sys.modules.setdefault("app", _app_sys.modules[__name__])
+
+# …then the rest of your imports:
+import itertools
+import re
+from collections import Counter
+# etc.
 
 This build removes **Mega Millions** entirely and focuses on **Powerball**.
 Includes: Power Play + EV, weighted Auto-pick (uniform / historical hot / historical cold),
 recency window, charts (optional matplotlib), CSV export, Gumroad license gate,
 Pyodide-safe timezone handling, and BeautifulSoup fallback.
 """
-from __future__ import annotations
 # Allow `import app` to resolve to this module when run as a single file (e.g., REPL/Pyodide)
 import sys as _app_sys
 _app_sys.modules.setdefault("app", _app_sys.modules[__name__])
