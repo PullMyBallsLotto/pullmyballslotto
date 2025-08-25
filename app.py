@@ -1,6 +1,23 @@
+# -*- coding: utf-8 -*-
 # file: app.py
+"""PullMyBallsLotto - Lottery Stats Explorer (Educational)
+
+Powerball-only build. Includes:
+- Power Play + EV (uniform/weighted/fixed) with 10× cap logic
+- Pick Builder UI + CSV import/export
+- History-weighted Auto-pick (hot/cold, optional recency window)
+- Best-effort jackpot scrape + latest draw detail with BeautifulSoup fallback
+- Pyodide-safe timezone bootstrap and fixed-offset fallback (-05:00) if tzdata missing
+- Terms/Legal with **No-Refunds** requirement (must accept to run)
+- Sticky footer banner with terms version + disclaimers
+- CLI demo fallback when Streamlit isn't available
+
+This app does NOT predict results. Educational use only. Not affiliated with any lottery commission.
+"""
+
 from __future__ import annotations
-# Allow `import app` to resolve to this module when run as a single file (e.g., REPL/Pyodide)
+
+# allow `import app` to resolve to this module when run as a single file/REPL
 import sys as _app_sys
 _app_sys.modules.setdefault("app", _app_sys.modules[__name__])
 
@@ -14,32 +31,103 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 import numpy as np
 import pandas as pd
 import requests
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-# Optional plotting (fallback to tables if unavailable)
-try:
+# Optional matplotlib (app still runs if missing)
+try:  # pragma: no cover
     import matplotlib.pyplot as plt  # type: ignore
     MPL_AVAILABLE = True
-except Exception:
+except Exception:  # pragma: no cover
     plt = None  # type: ignore
     MPL_AVAILABLE = False
 
-# Optional Streamlit (UI)
+# Optional BeautifulSoup (fallback available)
 try:  # pragma: no cover
-    import streamlit as st
-    from streamlit_autorefresh import st_autorefresh
-except Exception:  # pragma: no cover
-    st = None  # type: ignore
-
-# Optional BeautifulSoup (HTML parsing)
-try:
     from bs4 import BeautifulSoup  # type: ignore
     BS4_AVAILABLE = True
 except Exception:
     BeautifulSoup = None  # type: ignore
     BS4_AVAILABLE = False
 
-# Timezone handling (Pyodide-safe)
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+# Streamlit optional at import time
+try:  # pragma: no cover
+    import streamlit as st
+    from streamlit_autorefresh import st_autorefresh
+except Exception:  # pragma: no cover
+    st = None  # type: ignore
+
+# ---------------------- Legal / Terms ----------------------
+TERMS_VERSION = "2025-08-25"
+NO_REFUNDS_TEXT = (
+    "All sales are final and non-refundable except where required by applicable law. "
+    "Chargebacks may result in license revocation."
+)
+
+
+def legal_markdown() -> str:
+    return (
+        f"""
+**Educational & Entertainment Only.** This app analyzes public lottery data and simulates outcomes. It does **not** predict results, increase odds, or offer gambling services. Use is at your own risk.
+
+**No Affiliation.** Not affiliated with any lottery commission, Powerball®, MUSL, or state lotteries. Trademarks belong to their owners.
+
+**No Financial / Legal Advice.** Content is informational only and not professional advice. You are solely responsible for your decisions.
+
+**Compliance & Age.** You must comply with your local laws and be of legal age to buy lottery tickets where you live.
+
+**Data Sources & Accuracy.** Data is aggregated from public/official pages on a best‑effort basis and may be incomplete, delayed, or inaccurate. The app may fall back to alternate sources or cached data. No warranty of correctness.
+
+**Purchases & Access.** License keys are validated via Gumroad. Keys may be disabled for abuse, sharing, chargebacks, or fraud.
+
+**Refunds.** {NO_REFUNDS_TEXT}
+
+**Limitation of Liability.** To the maximum extent permitted by law, the app and authors are not liable for any indirect, incidental, consequential, special, exemplary, or punitive damages, or any loss of profits, revenue, data, or goodwill, arising from or related to your use of the app.
+
+**Indemnity.** You agree to defend, indemnify, and hold harmless the authors from any claims, damages, liabilities, and expenses arising from your use of the app or violation of these terms.
+
+**Updates.** Terms may be updated; continued use constitutes acceptance. Terms version: {TERMS_VERSION}.
+        """
+    )
+
+
+# ---------------------- CSS helpers ----------------------
+
+def _inject_global_css() -> None:
+    if st is None:
+        return
+    st.markdown(
+        """
+<style>
+/***** sticky footer *****/
+#pmb-footer {position: fixed; left: 0; right: 0; bottom: 0; z-index: 9999;}
+#pmb-footer .pmb-wrap {margin: 0 auto; max-width: 1200px; padding: 6px 12px; 
+  background: rgba(0,0,0,0.04); backdrop-filter: blur(4px); border-top: 1px solid rgba(0,0,0,0.1);
+  font-size: 12px; color: #555;}
+#pmb-footer .pmb-wrap a {text-decoration: underline;}
+/* add bottom padding so content isn't hidden under footer */
+section.main > div {padding-bottom: 42px;}
+</style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _render_footer() -> None:
+    if st is None:
+        return
+    st.markdown(
+        f"""
+<div id="pmb-footer">
+  <div class="pmb-wrap">
+    <strong>PullMyBallsLotto</strong> · Educational only · Not affiliated · <em>No refunds</em> · Terms {TERMS_VERSION}
+  </div>
+</div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+# -------- Timezone bootstrap (Pyodide/tzdata safe) --------
 
 def _ensure_tzdata_loaded_for_pyodide() -> None:
     """Load tzdata when running under Pyodide so ZoneInfo works (best-effort)."""
@@ -53,8 +141,10 @@ def _ensure_tzdata_loaded_for_pyodide() -> None:
         if sys.platform == "emscripten":
             import asyncio  # type: ignore
             import js  # type: ignore
+
             async def _load():
                 await js.pyodide.loadPackage("tzdata")
+
             try:
                 loop = asyncio.get_event_loop()
             except RuntimeError:
@@ -65,6 +155,7 @@ def _ensure_tzdata_loaded_for_pyodide() -> None:
     except Exception:
         pass
 
+
 def _get_et_zone():
     try:
         return ZoneInfo("America/New_York")
@@ -73,7 +164,9 @@ def _get_et_zone():
         try:
             return ZoneInfo("America/New_York")
         except Exception:
+            # Fallback: fixed -05:00 (standard time), avoids crashes in restricted envs
             return timezone(timedelta(hours=-5))
+
 
 # ---------------------- Globals ----------------------
 ET = _get_et_zone()
@@ -88,41 +181,39 @@ TX_PB_CSV = "https://www.texaslottery.com/export/sites/lottery/Games/Powerball/W
 NY_PB_CSV = "https://data.ny.gov/api/views/d6yy-54nr/rows.csv?accessType=DOWNLOAD"
 FL_PB = "https://floridalottery.com/games/draw-games/powerball"
 
-# Gumroad / paywall
-PRODUCT_IDS_RAW = ""  # legacy
+# Optional Gumroad secrets
+PRODUCT_IDS_RAW = ""
 PRODUCT_IDS: List[str] = []
 DEMO_ONLY = False
-SUB_PRODUCT_IDS: List[str] = []  # monthly unlimited
-PACK_PRODUCT_IDS: List[str] = []  # 20-run pack
-GUMROAD_PACK_URL = ""
-GUMROAD_SUB_URL = ""
-if st is not None:
+if st is not None:  # pragma: no cover
     try:
         PRODUCT_IDS_RAW = (st.secrets.get("GUMROAD_PRODUCT_IDS", "") or "").strip()
         PRODUCT_IDS = [p.strip() for p in PRODUCT_IDS_RAW.split(",") if p.strip()]
         DEMO_ONLY = (st.secrets.get("DEMO_ONLY", "false") or "false").lower() == "true"
-        SUB_PRODUCT_IDS = [p.strip() for p in (st.secrets.get("GUMROAD_SUB_PRODUCT_IDS", "") or "").split(",") if p.strip()]
-        PACK_PRODUCT_IDS = [p.strip() for p in (st.secrets.get("GUMROAD_PACK_PRODUCT_IDS", "") or "").split(",") if p.strip()]
-        GUMROAD_PACK_URL = (st.secrets.get("GUMROAD_PACK_URL", "") or "").strip()
-        GUMROAD_SUB_URL = (st.secrets.get("GUMROAD_SUB_URL", "") or "").strip()
     except Exception:
         pass
 
 # HTTP session
 SESSION = requests.Session()
 SESSION.headers.update({
-    "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+    "User-Agent": (
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0 Safari/537.36"
+    )
 })
 HTTP_TIMEOUT = 15
 
-# HTML fallback
+# -------- Minimal HTML->text fallback when BeautifulSoup isn't available --------
+
 def _html_to_text(html: str) -> str:
     try:
+        # cheap tag stripper; keeps line breaks to help regex parsing
         return re.sub(r'<[^>]+>', '\\n', html)  # literal backslash+n
     except Exception:
         return html
 
-# ---------------------- License / Paywall ----------------------
+
+# ---------------------- License ----------------------
 
 def verify_gumroad_license(license_key: str) -> bool:
     if not PRODUCT_IDS or not license_key:
@@ -142,33 +233,6 @@ def verify_gumroad_license(license_key: str) -> bool:
     return False
 
 
-def verify_gumroad_tier(license_key: str) -> str:
-    """Return 'unlimited', 'pack20', or 'none'."""
-    if not license_key:
-        return "none"
-    try:
-        for pid in SUB_PRODUCT_IDS:
-            resp = requests.post(
-                "https://api.gumroad.com/v2/licenses/verify",
-                data={"product_id": pid, "license_key": license_key.strip()},
-                timeout=15,
-            )
-            js = resp.json()
-            if bool(js.get("success")) and not js.get("purchase", {}).get("refunded", False):
-                return "unlimited"
-        for pid in PACK_PRODUCT_IDS:
-            resp = requests.post(
-                "https://api.gumroad.com/v2/licenses/verify",
-                data={"product_id": pid, "license_key": license_key.strip()},
-                timeout=15,
-            )
-            js = resp.json()
-            if bool(js.get("success")) and not js.get("purchase", {}).get("refunded", False):
-                return "pack20"
-    except Exception:
-        return "none"
-    return "none"
-
 # ---------------------- Prizes ----------------------
 POWERBALL_PRIZES: Dict[Tuple[int, bool], int | str] = {
     (5, True): "JACKPOT",
@@ -182,11 +246,13 @@ POWERBALL_PRIZES: Dict[Tuple[int, bool], int | str] = {
     (0, True): 4,
 }
 
+
 def prize_for_result(match_white: int, pb_matched: bool, jackpot_estimate: Optional[int]) -> int:
     val = POWERBALL_PRIZES.get((match_white, pb_matched), 0)
     if val == "JACKPOT":
         return int(jackpot_estimate or 0)
     return int(val)
+
 
 # ---------------------- Helpers ----------------------
 
@@ -225,6 +291,7 @@ def pair_matrix(pair_counts: Counter, max_white: int) -> np.ndarray:
             mat[b - 1, a - 1] = cnt
     return mat
 
+
 # ---------------------- Time ----------------------
 
 def next_powerball_draw(now: Optional[datetime] = None) -> datetime:
@@ -238,6 +305,7 @@ def next_powerball_draw(now: Optional[datetime] = None) -> datetime:
         d += timedelta(days=1)
     fallback = now + timedelta(days=2)
     return fallback.replace(hour=DRAW_HOUR, minute=DRAW_MIN, second=0, microsecond=0)
+
 
 # ---------------------- Scrape ----------------------
 
@@ -253,6 +321,7 @@ def get_powerball_jackpot_estimate() -> Optional[int]:
     except Exception:
         return None
 
+
 @dataclass
 class LatestDraw:
     date_text: Optional[str]
@@ -261,6 +330,7 @@ class LatestDraw:
     states_match5: List[str]
     tiers: List[Dict[str, object]]
     detail_url: Optional[str]
+
 
 def get_latest_powerball_draw_detail() -> Optional[LatestDraw]:
     try:
@@ -361,7 +431,17 @@ def get_latest_powerball_draw_detail() -> Optional[LatestDraw]:
         detail_url=detail_url,
     )
 
+
 # ---------------------- Data loaders ----------------------
+
+if st is not None:  # pragma: no cover
+    cache_data = st.cache_data
+else:  # testing/CLI fallback
+    def cache_data(*dargs, **dkwargs):
+        def deco(fn):
+            return fn
+        return deco
+
 
 def _parse_whites_red_from_text(s: str) -> Optional[Tuple[List[int], int]]:
     nums = [int(x) for x in re.findall(r"\d+", s)]
@@ -385,31 +465,22 @@ def _normalize_df(df: pd.DataFrame, white_max: int, red_max: int, cutoff_date: d
     ]
     return df.sort_values("draw_date").reset_index(drop=True)
 
-if st is not None:
-    cache_data = st.cache_data
-else:  # fallback
-    def cache_data(*dargs, **dkwargs):
-        def deco(fn):
-            return fn
-        return deco
 
 @cache_data(ttl=600, show_spinner=False)
 def load_powerball() -> pd.DataFrame:
+    """Load Powerball draws (5 whites 1..69, PB 1..26). TX CSV -> NY Open Data fallback."""
     rows: List[Dict[str, int | datetime.date]] = []
-    # Try Texas CSV (flexible schema)
+
+    # Try Texas CSV (schema may vary)
     try:
         tx = pd.read_csv(TX_PB_CSV, dtype=str, engine="python", on_bad_lines="skip")
         date_col = None
+        num_col = None
         for c in tx.columns:
             if re.search(r"draw\s*date", str(c), re.I):
                 date_col = c
-                break
-        num_col = None
-        if date_col is not None:
-            for c in tx.columns:
-                if re.search(r"winning\s*numbers", str(c), re.I):
-                    num_col = c
-                    break
+            if re.search(r"winning\s*numbers", str(c), re.I):
+                num_col = c
         if date_col is not None and num_col is not None:
             for _, rec in tx.iterrows():
                 try:
@@ -418,7 +489,11 @@ def load_powerball() -> pd.DataFrame:
                     if not parsed:
                         continue
                     whites, red = parsed
-                    rows.append({"date": d, "w1": whites[0], "w2": whites[1], "w3": whites[2], "w4": whites[3], "w5": whites[4], "r": red})
+                    rows.append({
+                        "date": d,
+                        "w1": whites[0], "w2": whites[1], "w3": whites[2], "w4": whites[3], "w5": whites[4],
+                        "r": red
+                    })
                 except Exception:
                     continue
     except Exception:
@@ -438,12 +513,17 @@ def load_powerball() -> pd.DataFrame:
                 if not parsed:
                     continue
                 whites, red = parsed
-                rows.append({"date": d, "w1": whites[0], "w2": whites[1], "w3": whites[2], "w4": whites[3], "w5": whites[4], "r": red})
+                rows.append({
+                    "date": d,
+                    "w1": whites[0], "w2": whites[1], "w3": whites[2], "w4": whites[3], "w5": whites[4],
+                    "r": red
+                })
         except Exception:
             pass
 
     df = pd.DataFrame(rows)
     return _normalize_df(df, white_max=69, red_max=26, cutoff_date=MATRIX_CUTOFF_PB)
+
 
 # ---------------------- Weights (from history) ----------------------
 
@@ -456,8 +536,9 @@ def make_weight_arrays(
     cold: bool = False,
     recency_n: int = 0,
 ) -> Tuple[np.ndarray, np.ndarray]:
-    """Laplace-smoothed probability arrays from historical frequencies.
-    If `recency_n > 0`, only last N draws are used. If `cold=True`, inverts to favor least-drawn.
+    """Build probability arrays from historical frequencies with Laplace smoothing.
+    If `recency_n > 0`, only the last N draws are used. If `cold=True`, invert
+    frequencies to favor least-drawn numbers. Falls back to uniform.
     """
     src = df
     if not df.empty and recency_n and recency_n > 0:
@@ -486,18 +567,23 @@ def make_weight_arrays(
     r = r / rs if rs > 0 else np.full(red_max, 1.0 / red_max)
     return w, r
 
+
 # ---------------------- Simulation ----------------------
+
 @dataclass(frozen=True)
 class Pick:
     whites: Tuple[int, int, int, int, int]
     red: int
+
     def normalized(self) -> "Pick":
         return Pick(tuple(sorted(self.whites)), int(self.red))
 
-# Power Play weights
-POWER_PLAY_10X_CAP = 150_000_000
+
+# Official-ish Power Play weights (approx.)
+POWER_PLAY_10X_CAP = 150_000_000  # 10× available only when jackpot ≤ cap
 PP_WEIGHTS_WITH_10X = {2: 0.557, 3: 0.303, 4: 0.070, 5: 0.047, 10: 0.023}
-PP_WEIGHTS_NO_10X   = {2: 0.571, 3: 0.309, 4: 0.069, 5: 0.051}
+PP_WEIGHTS_NO_10X = {2: 0.571, 3: 0.309, 4: 0.069, 5: 0.051}
+
 
 def _score_pick(draw_w: Sequence[int], draw_r: int, pick: Pick, jackpot_estimate: Optional[int]) -> Tuple[Tuple[int, bool], int]:
     w_matches = len(set(draw_w).intersection(pick.whites))
@@ -505,12 +591,14 @@ def _score_pick(draw_w: Sequence[int], draw_r: int, pick: Pick, jackpot_estimate
     prize = prize_for_result(w_matches, r_match, jackpot_estimate)
     return (w_matches, r_match), prize
 
+
 def _effective_allow_10x(pp_allow_10x: bool, pp_auto_10x_cap: bool, jackpot_estimate: Optional[int], cap: int) -> bool:
     if not pp_allow_10x:
         return False
     if not pp_auto_10x_cap:
         return True
     return (jackpot_estimate or 0) <= cap
+
 
 def _draw_power_play_multiplier(
     rng: np.random.Generator,
@@ -526,6 +614,7 @@ def _draw_power_play_multiplier(
         return int(rng.choice(options))
     if mode == "fixed":
         return int(max(2, min(10, fixed)))
+    # weighted
     weights = dict(weights_with_10x if allow_10x else weights_no_10x)
     ps = [weights[o] for o in options]
     total = float(sum(ps))
@@ -533,6 +622,7 @@ def _draw_power_play_multiplier(
         return 2
     ps = [p / total for p in ps]
     return int(rng.choice(options, p=ps))
+
 
 def _apply_power_play(prize: int, tier: Tuple[int, bool], multiplier: int) -> int:
     w_matches, r_match = tier
@@ -542,10 +632,12 @@ def _apply_power_play(prize: int, tier: Tuple[int, bool], multiplier: int) -> in
         return prize
     return int(prize * multiplier)
 
+
 def _generate_pick_uniform(rng: np.random.Generator, white_max: int, red_max: int) -> Tuple[List[int], int]:
     whites = sorted(rng.choice(np.arange(1, white_max + 1), size=5, replace=False).tolist())
     red = int(rng.integers(1, red_max + 1))
     return whites, red
+
 
 def _generate_pick_weighted(
     rng: np.random.Generator,
@@ -563,6 +655,7 @@ def _generate_pick_weighted(
     else:
         red = int(rng.choice(np.arange(1, red_max + 1), p=r_p))
     return whites, red
+
 
 def simulate_strategy(
     picks: Sequence[Tuple[Sequence[int], int]] | Sequence[Pick],
@@ -597,7 +690,7 @@ def simulate_strategy(
     norm_picks: List[Pick] = []
     if auto_pick:
         if auto_pick_each_draw:
-            norm_picks = []  # generated per-draw
+            norm_picks = []  # generated per draw
         else:
             for _ in range(max(auto_pick_n, 1)):
                 if auto_pick_weighting == "historical":
@@ -626,10 +719,11 @@ def simulate_strategy(
     eff_mode = "uniform" if pp_mode == "random" else pp_mode
 
     for _ in range(draws):
+        # Generate draw
         draw_w = tuple(sorted(rng.choice(np.arange(1, white_max + 1), size=5, replace=False).tolist()))
         draw_r = int(rng.integers(1, red_max + 1))
 
-        # Auto-pick per draw
+        # Generate auto picks per draw if requested
         if auto_pick and auto_pick_each_draw:
             current_picks: List[Pick] = []
             for _n in range(max(auto_pick_n, 1)):
@@ -642,7 +736,7 @@ def simulate_strategy(
         else:
             picks_iter = norm_picks
 
-        # Power Play draw
+        # Determine PP multiplier for this draw
         if power_play:
             draw_multiplier = _draw_power_play_multiplier(
                 rng,
@@ -691,6 +785,7 @@ def simulate_strategy(
     }
     return result
 
+
 # ---------------------- CSV helpers ----------------------
 
 def simulation_to_csvs(res: Dict[str, object], *, draws: int, num_picks: int) -> Tuple[pd.DataFrame, pd.DataFrame]:
@@ -715,68 +810,49 @@ def simulation_to_csvs(res: Dict[str, object], *, draws: int, num_picks: int) ->
     }])
     return tiers_df, metrics_df
 
-# ---------------------- Visual styling helpers ----------------------
 
-def _inject_global_css():  # pragma: no cover - UI only
-    if st is None:
-        return
-    st.markdown(
-        """
-        <style>
-        :root { --bg:#0b0b0b; --panel:#121212; --ink:#ffffff; --muted:#b9b9b9; --accent:#e50914; }
-        [data-testid="stAppViewContainer"] { background: var(--bg); color: var(--ink); }
-        [data-testid="stSidebar"] { background: #0e0e0e; }
-        h1,h2,h3,h4,h5,strong { color: var(--ink) !important; font-weight: 800 !important; }
-        .app-title { letter-spacing: 0.3px; }
-        .section-label { font-weight:700; opacity:.95; margin: 6px 0 2px; color: var(--ink); }
-        .stMarkdown, .stText, .stDataFrame, .stMetricValue, .stMetricLabel { color: var(--ink); }
-        .stRadio > label, .stCheckbox > label { color: var(--ink) !important; font-weight:600; }
-        /* Primary buttons -> bold red */
-        .stButton>button, .stDownloadButton>button { background: var(--accent); color:#fff; border:none; font-weight:800; border-radius:12px; }
-        .stButton>button:hover, .stDownloadButton>button:hover { filter: brightness(1.08); }
-        /* Ticket visuals */
-        .ticket-grid { display:grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap:12px; }
-        .ticket-card { background: var(--panel); border-radius:16px; padding:12px 14px; border:1px solid rgba(255,255,255,0.06); box-shadow: 0 1px 2px rgba(0,0,0,.25); }
-        .ticket-title { font-weight:800; font-size:.9rem; margin-bottom:8px; opacity:.95; color:var(--ink); }
-        .ticket-balls { display:flex; gap:8px; flex-wrap: wrap; align-items:center; }
-        .ball { width:40px; height:40px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-weight:800; border:2px solid rgba(255,255,255,.08); box-shadow: inset 0 -3px 4px rgba(0,0,0,.35); }
-        .ball.white { background: radial-gradient(circle at 30% 30%, #ffffff, #e8e8e8); color:#111; }
-        .ball.red { background: radial-gradient(circle at 30% 30%, #ff6161, #b30000); color:#fff; border-color: rgba(255,0,0,.35); }
-        .pill { display:inline-block; padding:4px 10px; border-radius:999px; font-size:.8rem; background:rgba(229,9,20,.15); color:#fff; border:1px solid rgba(229,9,20,.35); font-weight:700; margin-right:6px; }
-        /* Header hero */
-        .hero { background: linear-gradient(135deg, #1a0004 0%, #000 55%); border:1px solid rgba(229,9,20,.35); border-radius:18px; padding:16px 18px; margin-bottom:10px; position:relative; }
-        .hero h1 { margin:0; font-size:1.6rem; }
-        .hero-sub { color: var(--muted); font-weight:600; }
-        .hero-row { display:flex; gap:16px; flex-wrap:wrap; align-items:center; }
-        .hero-right { margin-left:auto; display:flex; gap:10px; align-items:center; }
-        /* Sticky action bar */
-        .sticky-run { position: sticky; top: 0; z-index: 5; backdrop-filter: blur(6px); padding: 8px 0 4px; margin: 6px 0; }
-        .sticky-inner { background: linear-gradient(135deg, rgba(229,9,20,.12), rgba(0,0,0,.35)); border:1px solid rgba(229,9,20,.35); padding:8px 10px; border-radius:12px; }
-        /* Chip buttons for picker */
-        .chip-grid { display:grid; grid-template-columns: repeat(10, 1fr); gap:6px; }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
+# ---------------------- UI helpers ----------------------
+
+def _parse_user_picks(text: str) -> List[Tuple[List[int], int]]:
+    picks: List[Tuple[List[int], int]] = []
+    for line in text.splitlines():
+        s = line.strip()
+        if not s:
+            continue
+        s = s.replace("|", " ").replace(",", " ")
+        nums: List[int] = []
+        buf: List[str] = []
+        for ch in s:
+            if ch.isdigit():
+                buf.append(ch)
+            else:
+                if buf:
+                    nums.append(int("".join(buf)))
+                    buf = []
+        if buf:
+            nums.append(int("".join(buf)))
+        if len(nums) < 6:
+            continue
+        whites, red = nums[:5], nums[5]
+        picks.append((whites, red))
+    return picks
 
 
-def _ticket_card_html(whites: Sequence[int], red: int, title: Optional[str] = None) -> str:
-    whites = list(sorted(whites))
-    title_html = f'<div class="ticket-title">{title}</div>' if title else ''
-    balls = ''.join([f'<div class="ball white">{w}</div>' for w in whites]) + f'<div class="ball red">{red}</div>'
-    return f'<div class="ticket-card">{title_html}<div class="ticket-balls">{balls}</div></div>'
+def _format_timedelta(td: timedelta) -> str:
+    total = int(td.total_seconds())
+    if total < 0:
+        total = 0
+    h, rem = divmod(total, 3600)
+    m, s = divmod(rem, 60)
+    return f"{h:02d}:{m:02d}:{s:02d}"
 
 
-def render_ticket_grid(picks: List[Tuple[Sequence[int], int]], title_prefix: str = "Ticket") -> None:  # pragma: no cover - UI only
-    if st is None:
-        return
-    cards = []
-    for i, (w, r) in enumerate(picks, 1):
-        cards.append(_ticket_card_html(w, r, f"{title_prefix} #{i}"))
-    html = '<div class="ticket-grid">' + ''.join(cards) + '</div>'
-    st.markdown(html, unsafe_allow_html=True)
+def _picks_to_csv_rows(picks: List[Tuple[List[int], int]]) -> pd.DataFrame:
+    rows = []
+    for whites, r in picks:
+        rows.append({"w1": whites[0], "w2": whites[1], "w3": whites[2], "w4": whites[3], "w5": whites[4], "r": r})
+    return pd.DataFrame(rows)
 
-# ---------------------- UI ----------------------
 
 def _parse_picks_csv(file) -> List[Tuple[List[int], int]]:
     try:
@@ -816,13 +892,19 @@ def _parse_picks_csv(file) -> List[Tuple[List[int], int]]:
                 continue
     elif "pick" in cols:
         for _, rec in df.iterrows():
-            # ignored since we removed text picks; keep compatibility
-            pass
+            out.extend(_parse_user_picks(str(rec[cols["pick"]])))
     return out
 
 
+def _tz_mode_str() -> str:
+    return "IANA America/New_York" if isinstance(ET, ZoneInfo) else "Fixed -05:00 fallback"
+
+
+# ---------------------- Streamlit App ----------------------
+
 def main() -> None:  # pragma: no cover - UI only
     if st is None:
+        # CLI fallback: run a tiny demo instead of raising in non-Streamlit envs
         print("[PullMyBallsLotto] Non-Streamlit environment detected. Running CLI demo…")
         try:
             picks = [([1, 2, 3, 4, 5], 6)]
@@ -837,122 +919,52 @@ def main() -> None:  # pragma: no cover - UI only
             print("CLI demo failed:", e)
         return
 
-    st.set_page_config(page_title="PullMyBallsLotto • Lottery Stats Explorer", layout="wide")
+    st.set_page_config(page_title="PullMyBallsLotto - Lottery Stats Explorer", layout="wide")
     _inject_global_css()
 
-    # Header hero with jackpot + next draw
-    jp_hdr = get_powerball_jackpot_estimate()
-    nxt_hdr = next_powerball_draw()
-    hero_html = f"""
-    <div class='hero'>
-      <div class='hero-row'>
-        <div>
-          <h1>🎱 PullMyBallsLotto</h1>
-          <div class='hero-sub'>Black • Red • White — bold stats for Powerball</div>
-        </div>
-        <div class='hero-right'>
-          <span class='pill'>Jackpot: {'$'+format(jp_hdr,',') if jp_hdr else 'TBD'}</span>
-          <span class='pill'>Next draw ET: {nxt_hdr.strftime('%a %b %d, %I:%M %p')}</span>
-        </div>
-      </div>
-    </div>
-    """
-    st.markdown(hero_html, unsafe_allow_html=True)
+    st.title("PullMyBallsLotto - Lottery Stats Explorer")
     st.caption("Educational only. Not affiliated with any lottery commission.")
 
-    # Env status + cache control
-    import platform
-    try:
-        et_key = getattr(ET, 'key', None)
-        env_pills = [
-            f"<span class='pill'>Python: {platform.python_version()}</span>",
-            f"<span class='pill'>NumPy: {getattr(np, '__version__', 'n/a')}</span>",
-            f"<span class='pill'>Pandas: {getattr(pd, '__version__', 'n/a')}</span>",
-            f"<span class='pill'>Matplotlib: {'yes' if 'MPL_AVAILABLE' in globals() and MPL_AVAILABLE else 'no'}</span>",
-            f"<span class='pill'>BS4: {'yes' if BS4_AVAILABLE else 'no'}</span>",
-            f"<span class='pill'>TZ: {et_key or 'UTC-05:00'}</span>",
-        ]
-        st.markdown('<div class="hero-row">' + ''.join(env_pills) + '</div>', unsafe_allow_html=True)
-    except Exception:
-        pass
+    # Terms / Legal (must accept to run simulations)
+    with st.expander("Legal & Terms of Use", expanded=False):
+        st.markdown(legal_markdown())
+        st.info(NO_REFUNDS_TEXT)
+    agree_terms = st.checkbox("I agree to the Terms of Use (including No‑Refund policy)", value=False)
+    if "terms_agreed" not in st.session_state:
+        st.session_state["terms_agreed"] = False
+    if agree_terms:
+        st.session_state["terms_agreed"] = True
 
-    with st.sidebar:
-        if st.button("🧹 Clear cache & reload"):
-            try:
-                st.cache_data.clear()
-            except Exception:
-                pass
-            st.experimental_rerun()
-
+    # Optional license gate (soft)
     colL, colR = st.columns([1, 2])
     with colL:
-        st.subheader("Access")
-        if "tier" not in st.session_state:
-            st.session_state["tier"] = "none"
-        if "free_runs_left" not in st.session_state:
-            st.session_state["free_runs_left"] = 5
-        if "pack_runs_left" not in st.session_state:
-            st.session_state["pack_runs_left"] = 20
-
-        license_key = st.text_input("License key (Gumroad)", type="password", help="Paste your key for a 20-run pack or monthly unlimited.")
-        col_act1, col_act2 = st.columns([1,1])
-        with col_act1:
-            if st.button("Activate license"):
-                tier = verify_gumroad_tier(license_key)
-                st.session_state["tier"] = tier
-                if tier == "unlimited":
-                    st.success("Unlimited plan active.")
-                elif tier == "pack20":
-                    if st.session_state.get("pack_runs_left", 0) <= 0:
-                        st.session_state["pack_runs_left"] = 20
-                    st.success(f"20-run pack active. Runs left: {st.session_state['pack_runs_left']}")
-                else:
-                    st.warning("License not recognized. You can continue with free runs.")
-        with col_act2:
-            if st.button("Reset free runs (dev)"):
-                st.session_state["free_runs_left"] = 5
-                st.session_state["pack_runs_left"] = 20
-
-        tier = st.session_state.get("tier", "none")
-        is_unlimited = tier == "unlimited"
-        has_pack = tier == "pack20"
-        is_paid = is_unlimited or has_pack
-
-        status_pills = [
-            f"<span class='pill'>Tier: {'Unlimited' if is_unlimited else ('20-pack' if has_pack else 'Free')}</span>",
-            f"<span class='pill'>Free runs left: {st.session_state['free_runs_left']}</span>" if not is_paid else "",
-            f"<span class='pill'>Pack runs left: {st.session_state['pack_runs_left']}</span>" if has_pack else "",
-        ]
-        st.markdown('<div class="hero-row">' + ''.join([p for p in status_pills if p]) + '</div>', unsafe_allow_html=True)
-
-        if not is_paid:
-            st.info("First 5 simulation runs are free. Get more:")
-        with st.expander("Buy credits/plans"):
-            if GUMROAD_PACK_URL:
-                st.markdown(f"- **20 runs – $4.99** · [Buy pack]({GUMROAD_PACK_URL})")
-            else:
-                st.markdown("- **20 runs – $4.99** · _Set `GUMROAD_PACK_URL` in secrets to enable link_.")
-            if GUMROAD_SUB_URL:
-                st.markdown(f"- **Unlimited (monthly) – $12.99** · [Subscribe]({GUMROAD_SUB_URL})")
-            else:
-                st.markdown("- **Unlimited (monthly) – $12.99** · _Set `GUMROAD_SUB_URL` in secrets to enable link_.")
-
-        licensed = is_paid  # reuse existing variable name
+        license_key = st.text_input("License key (Gumroad)", type="password", help="Optional; unlock Pro if configured.")
+        licensed = verify_gumroad_license(license_key) if license_key else False
+        if DEMO_ONLY and not licensed:
+            st.info("Demo mode: some features may be limited.")
+        elif licensed:
+            st.success("License verified.")
 
     with colR:
         nxt = next_powerball_draw()
         remaining = nxt - datetime.now(ET)
-        st.metric("Next Powerball draw (ET)", nxt.strftime("%a, %b %d %Y %I:%M %p"), f"in {remaining}")
+        st.metric("Next Powerball draw (ET)", nxt.strftime("%a, %b %d %Y %I:%M %p"), _format_timedelta(remaining))
         try:
             st_autorefresh(interval=60 * 1000, key="autorefresh_minutely")
         except Exception:
             pass
 
+    # Jackpot estimate (best-effort)
+    jp = get_powerball_jackpot_estimate()
+    if jp:
+        st.info(f"Estimated Jackpot: ${jp:,}")
+
+    # Data
     with st.spinner("Loading datasets…"):
         df_pb = load_powerball()
-    st.write(f"Powerball draws: **{len(df_pb)}**")
+    st.write(f"Powerball draws: **{len(df_pb)}** · TZ: {_tz_mode_str()} · Parser: {'BeautifulSoup' if BS4_AVAILABLE else 'regex fallback'}")
 
-    tab_overview, tab_stats, tab_sim = st.tabs(["Overview", "Stats (PB)", "Simulator"])
+    tab_overview, tab_stats, tab_sim = st.tabs(["Overview", "Stats", "Simulator"])
 
     with tab_overview:
         ld = get_latest_powerball_draw_detail()
@@ -969,18 +981,7 @@ def main() -> None:  # pragma: no cover - UI only
             if ld.detail_url:
                 st.markdown(f"[Open detail page]({ld.detail_url})")
         else:
-            if not df_pb.empty:
-                last = df_pb.iloc[-1]
-                derived_date = pd.to_datetime(last["draw_date"]).strftime("%a, %b %d %Y")
-                derived_nums = [int(last.get(f"w{i}", 0)) for i in range(1,6)]
-                derived_r = int(last.get("r", 0))
-                st.subheader("Latest Powerball Detail (derived from dataset)")
-                render_ticket_grid([(derived_nums, derived_r)], title_prefix="Latest")
-                st.caption("Shown from historical CSV because powerball.com detail page could not be reached.")
-                st.markdown(f"Try the official site: [Previous Results]({PB_PREV_RESULTS})")
-            else:
-                st.warning("Could not retrieve the latest draw detail right now.")
-        st.caption(f"HTML parser: {'BeautifulSoup' if BS4_AVAILABLE else 'regex fallback'}")
+            st.warning("Could not retrieve the latest draw detail right now.")
         st.markdown(f"Ticket cutoff varies by state. Example: [Florida info]({FL_PB}).")
 
     with tab_stats:
@@ -1005,16 +1006,253 @@ def main() -> None:  # pragma: no cover - UI only
         # --- Pick Builder ---
         st.markdown("**Pick Builder (optional)**")
         if "built_picks" not in st.session_state:
-            st.session_state["built_picks"] = []  # list of (whites, r)
-        if "chip_whites" not in st.session_state:
-            st.session_state["chip_whites"] = []
-        if "chip_red" not in st.session_state:
-            st.session_state["chip_red"] = None
+            st.session_state["built_picks"] = []  # list[(whites, r)]
+        colb1, colb2, colb3 = st.columns([3, 2, 2])
+        with colb1:
+            sel_whites = st.multiselect("Select 5 white balls (1–69)", options=list(range(1, 70)), max_selections=5)
+        with colb2:
+            sel_red = st.number_input("Powerball (1–26)", min_value=1, max_value=26, value=6, step=1)
+            if st.button("Add pick") and len(sel_whites) == 5:
+                pick = (sorted(sel_whites), int(sel_red))
+                if pick not in st.session_state["built_picks"]:
+                    st.session_state["built_picks"].append(pick)
+        with colb3:
+            up = st.file_uploader("CSV import (w1..w5,r or W,R)", type=["csv"], accept_multiple_files=False)
+            if up is not None:
+                imported = _parse_picks_csv(up)
+                for p in imported:
+                    if p not in st.session_state["built_picks"]:
+                        st.session_state["built_picks"].append(p)
+            if st.button("Clear picks"):
+                st.session_state["built_picks"] = []
 
-        # Lotto slip chip picker (clickable)
-        st.markdown('<div class="section-label">Lotto slip picker</div>', unsafe_allow_html=True)
-        # Whites chips
-        st.markdown("<div class='section-label'>Select 5 white balls</div>", unsafe_allow_html=True)
-        cols_w = st.columns(10)
-        current_w = set(st.session_state["chip_whites"])
-    
+        if st.session_state["built_picks"]:
+            dfbp = _picks_to_csv_rows([(w, r) for (w, r) in st.session_state["built_picks"]])
+            st.dataframe(dfbp, use_container_width=True, hide_index=True)
+            st.download_button(
+                "Download picks CSV",
+                data=dfbp.to_csv(index=False).encode("utf-8"),
+                file_name="picks.csv",
+                mime="text/csv",
+            )
+
+        st.markdown("**Or paste picks**")
+        example = "1 2 3 4 5 | 6\n7, 8, 9, 10, 11 12"
+        txt = st.text_area("Text picks (one per line)", value=example, height=90)
+        picks_text = _parse_user_picks(txt)
+
+        # Unified picks (built + text, deduped)
+        unified: List[Tuple[List[int], int]] = []
+        seen = set()
+        for src in (st.session_state["built_picks"], picks_text):
+            for whites, r in src:
+                key = (tuple(sorted(whites)), int(r))
+                if key not in seen:
+                    seen.add(key)
+                    unified.append((list(key[0]), key[1]))
+
+        st.write(f"Total picks: **{len(unified)}**")
+
+        # --- Auto-pick controls ---
+        st.markdown("**Auto-pick (Quick Pick strategy)**")
+        colap1, colap2, colap3, colap4 = st.columns([1, 1, 2, 2])
+        with colap1:
+            use_auto_pick = st.checkbox("Auto-pick tickets", value=False)
+        with colap2:
+            auto_pick_n = st.number_input("Tickets to auto-pick", min_value=1, max_value=100, value=5, step=1, disabled=not use_auto_pick)
+        with colap3:
+            auto_weight_ui = st.radio(
+                "Weighting",
+                ["Uniform", "Historical (hot-weighted)", "Historical (cold-weighted)"],
+                horizontal=False,
+                index=0,
+                disabled=not use_auto_pick,
+            )
+        with colap4:
+            auto_each_draw = st.checkbox("Re-pick every draw (advanced)", value=False, disabled=not use_auto_pick)
+
+        recency_max = int(len(df_pb)) if isinstance(df_pb, pd.DataFrame) else 0
+        recency_enabled = use_auto_pick and auto_weight_ui.startswith("Historical") and recency_max > 0
+        recency_n = st.slider(
+            "Recency window (last N draws; 0 = all history)",
+            min_value=0,
+            max_value=recency_max,
+            value=0,
+            step=10 if recency_max > 200 else 1,
+            disabled=not recency_enabled,
+        )
+
+        if recency_enabled:
+            try:
+                cold_flag = auto_weight_ui.startswith("Historical (cold")
+                w_arr, r_arr = make_weight_arrays(
+                    df_pb, white_max=69, red_max=26, smoothing=1.0, cold=cold_flag, recency_n=recency_n
+                )
+                if MPL_AVAILABLE:
+                    idx_w = np.argsort(w_arr)[::-1][:20]
+                    fig1 = plt.figure()
+                    plt.bar([int(i + 1) for i in idx_w], w_arr[idx_w])
+                    plt.title("White weights (top 20)")
+                    plt.xlabel("Number")
+                    plt.ylabel("Probability")
+                    st.pyplot(fig1, clear_figure=True)
+
+                    idx_r = np.argsort(r_arr)[::-1][:10]
+                    fig2 = plt.figure()
+                    plt.bar([int(i + 1) for i in idx_r], r_arr[idx_r])
+                    plt.title("Red weights (top 10)")
+                    plt.xlabel("Number")
+                    plt.ylabel("Probability")
+                    st.pyplot(fig2, clear_figure=True)
+                else:
+                    st.caption("Charts disabled: matplotlib not installed")
+                    w_df = pd.DataFrame({"number": np.arange(1, 70), "prob": w_arr})
+                    r_df = pd.DataFrame({"number": np.arange(1, 27), "prob": r_arr})
+                    st.write("White weights (top 20):")
+                    st.dataframe(w_df.sort_values("prob", ascending=False).head(20), use_container_width=True)
+                    st.write("Red weights (top 10):")
+                    st.dataframe(r_df.sort_values("prob", ascending=False).head(10), use_container_width=True)
+            except Exception:
+                pass
+
+        # Preview auto-picked tickets when not re-picking each draw
+        if use_auto_pick and not auto_each_draw:
+            try:
+                rng_prev = np.random.default_rng(None)
+                cold_flag = auto_weight_ui.startswith("Historical (cold")
+                if auto_weight_ui.startswith("Historical"):
+                    w_arr, r_arr = make_weight_arrays(
+                        df_pb, white_max=69, red_max=26, smoothing=1.0, cold=cold_flag, recency_n=recency_n
+                    )
+                else:
+                    w_arr, r_arr = None, None
+                preview = []
+                for _p in range(int(auto_pick_n)):
+                    if auto_weight_ui.startswith("Historical"):
+                        ws, rr = _generate_pick_weighted(rng_prev, 69, 26, w_arr, r_arr)
+                    else:
+                        ws, rr = _generate_pick_uniform(rng_prev, 69, 26)
+                    preview.append({"w1": ws[0], "w2": ws[1], "w3": ws[2], "w4": ws[3], "w5": ws[4], "r": rr})
+                if preview:
+                    dfprev = pd.DataFrame(preview)
+                    st.dataframe(dfprev, use_container_width=True, hide_index=True)
+                    st.download_button(
+                        "Download auto-picked CSV",
+                        data=dfprev.to_csv(index=False).encode("utf-8"),
+                        file_name="auto_picks.csv",
+                        mime="text/csv",
+                    )
+            except Exception:
+                pass
+
+        # --- Power Play & EV controls ---
+        colpp1, colpp2, colpp3 = st.columns([1, 1, 2])
+        with colpp1:
+            enable_pp = st.checkbox("Enable Power Play (+$1/play)", value=False)
+        with colpp2:
+            pp_mode_ui = st.radio("PP mode", ["Uniform", "Weighted (official-ish)", "Fixed"], index=0, disabled=not enable_pp)
+        with colpp3:
+            pp_fixed = st.number_input("Fixed multiplier", min_value=2, max_value=10, value=2, step=1, disabled=not (enable_pp and pp_mode_ui == "Fixed"))
+
+        colpp4, colpp5, colpp6 = st.columns([1, 1, 2])
+        with colpp4:
+            pp_allow_10x = st.checkbox("Allow 10×", value=True, disabled=not enable_pp)
+        with colpp5:
+            auto_cap = st.checkbox("Apply 10× cap (≤ $150M)", value=True, disabled=not enable_pp)
+        with colpp6:
+            draws = st.slider("Simulated draws", 100, 200_000, 10_000, step=100)
+
+        seed = st.number_input("Seed (optional)", value=0, min_value=0, step=1)
+        jp_override = st.number_input("Jackpot estimate (override)", value=int(jp or 0), min_value=0, step=1)
+
+        if st.button("Run simulation", type="primary"):
+            # Require acceptance of Terms
+            if not st.session_state.get("terms_agreed", False):
+                st.error("Please accept the Terms of Use (including No‑Refund policy) before running simulations.")
+                st.stop()
+
+            if not unified and not use_auto_pick:
+                st.error("Please enter at least one valid pick or enable Auto-pick.")
+            else:
+                try:
+                    mode_map = {"Uniform": "uniform", "Weighted (official-ish)": "weighted", "Fixed": "fixed"}
+                    auto_w = None
+                    auto_r = None
+                    if use_auto_pick and auto_weight_ui.startswith("Historical"):
+                        try:
+                            cold_flag = auto_weight_ui.startswith("Historical (cold")
+                            auto_w, auto_r = make_weight_arrays(
+                                df_pb, white_max=69, red_max=26, smoothing=1.0, cold=cold_flag, recency_n=recency_n
+                            )
+                        except Exception:
+                            auto_w, auto_r = None, None
+                    res = simulate_strategy(
+                        ([] if use_auto_pick else unified),
+                        draws=draws if (licensed or not DEMO_ONLY) else min(draws, 5000),
+                        jackpot_estimate=jp_override or None,
+                        seed=seed or None,
+                        power_play=enable_pp,
+                        pp_mode=mode_map.get(pp_mode_ui, "uniform"),
+                        pp_fixed_multiplier=pp_fixed,
+                        pp_allow_10x=pp_allow_10x,
+                        pp_auto_10x_cap=auto_cap,
+                        auto_pick=use_auto_pick,
+                        auto_pick_n=auto_pick_n,
+                        auto_pick_weighting=("historical" if auto_weight_ui.startswith("Historical") else "uniform"),
+                        auto_pick_each_draw=auto_each_draw,
+                        white_weights=auto_w,
+                        red_weights=auto_r,
+                    )
+
+                    met1, met2, met3 = st.columns(3)
+                    with met1:
+                        st.metric("Gross EV per draw", f"${res['overall']['gross_ev_per_draw']:.4f}")
+                    with met2:
+                        st.metric("Ticket cost per play", f"${res['overall']['cost_per_play']:.2f}")
+                    with met3:
+                        st.metric("Net EV per draw", f"${res['overall']['net_ev_per_draw']:.4f}")
+
+                    st.json(res)
+
+                    # Footer legal reminder on result
+                    st.caption("Use at your own risk. No affiliation. No refunds except where required by law.")
+
+                    if licensed:
+                        tiers_df, metrics_df = simulation_to_csvs(
+                            res,
+                            draws=res["draws"],
+                            num_picks=(auto_pick_n if use_auto_pick and auto_each_draw else max(len(unified), auto_pick_n)),
+                        )
+                        c1, c2 = st.columns(2)
+                        with c1:
+                            st.download_button(
+                                "Download tiers CSV",
+                                data=tiers_df.to_csv(index=False).encode("utf-8"),
+                                file_name="sim_tiers.csv",
+                                mime="text/csv",
+                            )
+                        with c2:
+                            st.download_button(
+                                "Download metrics CSV",
+                                data=metrics_df.to_csv(index=False).encode("utf-8"),
+                                file_name="sim_metrics.csv",
+                                mime="text/csv",
+                            )
+                except Exception as e:
+                    st.exception(e)
+
+    # Sticky footer on all tabs
+    _render_footer()
+
+
+if __name__ == "__main__":
+    if st is not None:
+        main()
+    else:
+        # Standalone execution without Streamlit
+        try:
+            picks = [([1, 2, 3, 4, 5], 6)]
+            out = simulate_strategy(picks, draws=1000, seed=0)
+            print("CLI demo:", {"draws": out["draws"], "gross_ev_per_draw": out["overall"]["gross_ev_per_draw"]})
+        except Exception as e:
+            print("CLI demo failed:", e)
