@@ -1123,13 +1123,18 @@ def main() -> None:  # pragma: no cover - UI only
                 except Exception as e:
                     st.exception(e)
 
-
 if __name__ == "__main__":
     if st is not None:
         main()
     else:
-        # Standalone execute
-        # file: app.py
+        # Standalone execution without Streamlit
+        try:
+            picks = [([1, 2, 3, 4, 5], 6)]
+            out = simulate_strategy(picks, draws=1000, seed=0)
+            print("CLI demo:", {"draws": out["draws"], "gross_ev_per_draw": out["overall"]["gross_ev_per_draw"]})
+        except Exception as e:
+            print("CLI demo failed:", e)
+
 # --- requirements.txt (copy/paste) ---
 # streamlit==1.37.1
 # pandas==2.2.2
