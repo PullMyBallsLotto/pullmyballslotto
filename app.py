@@ -836,8 +836,8 @@ def main() -> None:  # pragma: no cover
     with st.sidebar:
         st.markdown("### About & Terms")
         _md_bytes, _html_bytes, _fname = _terms_download_payloads()
-        st.download_button("Download Terms (.md)", data=_md_bytes, file_name=f"{_fname}.md", mime="text/markdown")
-        st.download_button("Download Terms (.html)", data=_html_bytes, file_name=f"{_fname}.html", mime="text/html")
+        st.download_button("Download Terms (.md)", data=_md_bytes, file_name=f"{_fname}.md", mime="text/markdown", key="dl_terms_md_sidebar")
+        st.download_button("Download Terms (.html)", data=_html_bytes, file_name=f"{_fname}.html", mime="text/html", key="dl_terms_html_sidebar")
         st.caption("Use Pages → Terms for a printer-friendly page.")
 
     # Optional license gate (soft)
@@ -942,6 +942,7 @@ def main() -> None:  # pragma: no cover
                 data=dfbp.to_csv(index=False).encode("utf-8"),
                 file_name="picks.csv",
                 mime="text/csv",
+                key="dl_picks_csv",
             )
 
         st.markdown("**Or paste picks**")
@@ -1048,6 +1049,7 @@ def main() -> None:  # pragma: no cover
                         data=dfprev.to_csv(index=False).encode("utf-8"),
                         file_name="auto_picks.csv",
                         mime="text/csv",
+                        key="dl_auto_picks",
                     )
             except Exception:
                 pass
@@ -1128,6 +1130,7 @@ def main() -> None:  # pragma: no cover
                                 data=tiers_df.to_csv(index=False).encode("utf-8"),
                                 file_name="sim_tiers.csv",
                                 mime="text/csv",
+                                key="dl_tiers_csv",
                             )
                         with c2:
                             st.download_button(
@@ -1135,6 +1138,7 @@ def main() -> None:  # pragma: no cover
                                 data=metrics_df.to_csv(index=False).encode("utf-8"),
                                 file_name="sim_metrics.csv",
                                 mime="text/csv",
+                                key="dl_metrics_csv",
                             )
                 except Exception as e:
                     st.exception(e)
@@ -1146,9 +1150,9 @@ def main() -> None:  # pragma: no cover
         _md_bytes, _html_bytes, _fname = _terms_download_payloads()
         cta1, cta2 = st.columns(2)
         with cta1:
-            st.download_button("Download Terms (.md)", data=_md_bytes, file_name=f"{_fname}.md", mime="text/markdown")
+            st.download_button("Download Terms (.md)", data=_md_bytes, file_name=f"{_fname}.md", mime="text/markdown", key="dl_terms_md_tab")
         with cta2:
-            st.download_button("Download Terms (.html)", data=_html_bytes, file_name=f"{_fname}.html", mime="text/html")
+            st.download_button("Download Terms (.html)", data=_html_bytes, file_name=f"{_fname}.html", mime="text/html", key="dl_terms_html_tab")
         st.caption("Tip: Use your browser’s Print dialog (Ctrl/Cmd+P) to save this tab as PDF.")
 
     # Small sticky footer
@@ -1170,3 +1174,4 @@ if __name__ == "__main__":
         picks = [([1, 2, 3, 4, 5], 6)]
         out = simulate_strategy(picks, draws=1000, seed=0)
         print("CLI demo:", {"draws": out["draws"], "gross_ev_per_draw": out["overall"]["gross_ev_per_draw"]})
+
