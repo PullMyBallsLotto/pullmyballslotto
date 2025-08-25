@@ -1,4 +1,15 @@
 # file: app.py
+# --- requirements.txt (copy/paste) ---
+# streamlit==1.37.1
+# pandas==2.2.2
+# numpy==2.0.1
+# requests==2.32.3
+# matplotlib==3.9.0
+# seaborn==0.13.2
+# python-dateutil==2.9.0.post0
+# streamlit-autorefresh==1.0.1
+# beautifulsoup4==4.12.3
+# tzdata==2024.1   # <— add this to fix ZoneInfo on minimal/Pyodide-like envs
 """PullMyBallsLotto • Lottery Stats Explorer (Educational)
 
 Adds Power Play weighted distribution preset (official-ish), auto 10× cap by jackpot,
@@ -19,7 +30,10 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 import numpy as np
 import pandas as pd
 import requests
-from bs4 import BeautifulSoup
+try:
+    from bs4 import BeautifulSoup  # type: ignore
+except Exception:  # bs4 may be unavailable in minimal envs / Pyodide
+    BeautifulSoup = None  # type: ignore
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 try:  # pragma: no cover - optional in test env
@@ -108,6 +122,15 @@ SESSION.headers.update(
     }
 )
 HTTP_TIMEOUT = 15
+
+# -------- Minimal HTML->text fallback when BeautifulSoup isn't available --------
+def _html_to_text(html: str) -> str:
+    try:
+        # cheap tag stripper; keeps line breaks to help regex parsing
+        return re.sub(r"<[^>]+>", "
+", html)
+    except Exception:
+        return html
 
 # ---------------------- License ----------------------
 
@@ -243,22 +266,28 @@ def get_latest_powerball_draw_detail() -> Optional[LatestDraw]:
 
     try:
         dhtml = SESSION.get(detail_url, timeout=HTTP_TIMEOUT).text
-        soup = BeautifulSoup(dhtml, "html.parser")
-        page_txt = soup.get_text("\n", strip=True)
+        if BeautifulSoup is not None:
+            soup = BeautifulSoup(dhtml, "html.parser")
+            page_txt = soup.get_text("
+", strip=True)
+        else:
+            soup = None
+            page_txt = _html_to_text(dhtml)
     except Exception:
         return None
 
     date_text: Optional[str] = None
     try:
         date_pat = re.compile(r"\b(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun),\s+[A-Za-z]{3}\s+\d{1,2},\s+\d{4}\b")
-        for tag in ("h1", "h2", "h3", "h4", "h5"):
-            h = soup.find(tag)
-            if h:
-                ht = h.get_text(" ", strip=True)
-                mdate = date_pat.search(ht)
-                if mdate:
-                    date_text = mdate.group(0)
-                    break
+        if 'soup' in locals() and soup is not None:
+            for tag in ("h1", "h2", "h3", "h4", "h5"):
+                h = soup.find(tag)
+                if h:
+                    ht = h.get_text(" ", strip=True)
+                    mdate = date_pat.search(ht)
+                    if mdate:
+                        date_text = mdate.group(0)
+                        break
         if not date_text:
             mdate = date_pat.search(page_txt)
             if mdate:
