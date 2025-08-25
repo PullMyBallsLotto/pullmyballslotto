@@ -1256,4 +1256,3 @@ if __name__ == "__main__":
             print("CLI demo:", {"draws": out["draws"], "gross_ev_per_draw": out["overall"]["gross_ev_per_draw"]})
         except Exception as e:
             print("CLI demo failed:", e)
-
