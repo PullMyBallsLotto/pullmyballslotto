@@ -1,21 +1,23 @@
-# -*- coding: utf-8 -*-
 # file: app.py
-"""PullMyBallsLotto - Lottery Stats Explorer (Educational)
+# --- requirements.txt (copy/paste) ---
+# streamlit==1.37.1
+# pandas==2.2.2
+# numpy==2.0.1
+# requests==2.32.3
+# matplotlib==3.9.0
+# seaborn==0.13.2
+# python-dateutil==2.9.0.post0
+# streamlit-autorefresh==1.0.1
+# beautifulsoup4==4.12.3
+# tzdata==2024.1   # <— add this to fix ZoneInfo on minimal/Pyodide-like envs
+"""PullMyBallsLotto • Lottery Stats Explorer (Educational)
 
-Powerball-only build. Includes:
-- Power Play + EV (uniform/weighted/fixed), 10x cap logic
-- Pick Builder UI + CSV import/export
-- History-weighted Auto-pick (hot/cold, optional recency window)
-- Best-effort jackpot scrape + latest draw detail with BeautifulSoup fallback
-- Pyodide-safe timezone bootstrap and fixed-offset fallback (-05:00) if tzdata missing
-- CLI demo fallback when Streamlit isn't available
-
-This app does NOT predict results. Educational use only. Not affiliated with any lottery commission.
+Adds Power Play weighted distribution preset (official-ish), auto 10× cap by jackpot,
+EV metrics, Pick Builder, CSV export of simulation results (Pro only), and
+history-weighted Auto-pick (with recency & cold/hot modes).
 """
-
 from __future__ import annotations
-
-# allow `import app` to resolve to this module when run as a single file/REPL
+# Allow `import app` to resolve to this module when run as a single file (e.g., REPL/Pyodide)
 import sys as _app_sys
 _app_sys.modules.setdefault("app", _app_sys.modules[__name__])
 
@@ -29,25 +31,23 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 import numpy as np
 import pandas as pd
 import requests
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
-
-# Optional matplotlib (app still runs if missing)
+# --- Make matplotlib optional to avoid ModuleNotFoundError in slim envs ---
 try:  # pragma: no cover
     import matplotlib.pyplot as plt  # type: ignore
     MPL_AVAILABLE = True
 except Exception:  # pragma: no cover
     plt = None  # type: ignore
     MPL_AVAILABLE = False
-
-# Optional BeautifulSoup (fallback available)
-try:  # pragma: no cover
+# --- Make BeautifulSoup optional with a safe fallback ---
+try:
     from bs4 import BeautifulSoup  # type: ignore
     BS4_AVAILABLE = True
 except Exception:
     BeautifulSoup = None  # type: ignore
     BS4_AVAILABLE = False
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-# Streamlit optional at import time
+# Streamlit is optional at import time
 try:  # pragma: no cover
     import streamlit as st
     from streamlit_autorefresh import st_autorefresh
@@ -82,7 +82,6 @@ def _ensure_tzdata_loaded_for_pyodide() -> None:
     except Exception:
         pass
 
-
 def _get_et_zone():
     try:
         return ZoneInfo("America/New_York")
@@ -91,15 +90,12 @@ def _get_et_zone():
         try:
             return ZoneInfo("America/New_York")
         except Exception:
-            # Fallback: fixed -05:00 (standard time), avoids crashes in restricted envs
             return timezone(timedelta(hours=-5))
-
 
 # ---------------------- Globals ----------------------
 ET = _get_et_zone()
 DRAW_DAYS_PB = {0, 2, 5}  # Mon, Wed, Sat
 DRAW_HOUR, DRAW_MIN = 22, 59
-
 MATRIX_CUTOFF_PB = pd.to_datetime("2015-10-04").date()
 
 POWERBALL_HOME = "https://www.powerball.com/"
@@ -112,7 +108,7 @@ FL_PB = "https://floridalottery.com/games/draw-games/powerball"
 PRODUCT_IDS_RAW = ""
 PRODUCT_IDS: List[str] = []
 DEMO_ONLY = False
-if st is not None:  # pragma: no cover
+if st is not None:
     try:
         PRODUCT_IDS_RAW = (st.secrets.get("GUMROAD_PRODUCT_IDS", "") or "").strip()
         PRODUCT_IDS = [p.strip() for p in PRODUCT_IDS_RAW.split(",") if p.strip()]
@@ -120,13 +116,9 @@ if st is not None:  # pragma: no cover
     except Exception:
         pass
 
-# HTTP session
 SESSION = requests.Session()
 SESSION.headers.update({
-    "User-Agent": (
-        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/124.0 Safari/537.36"
-    )
+    "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
 })
 HTTP_TIMEOUT = 15
 
@@ -135,10 +127,9 @@ HTTP_TIMEOUT = 15
 def _html_to_text(html: str) -> str:
     try:
         # cheap tag stripper; keeps line breaks to help regex parsing
-        return re.sub(r'<[^>]+>', '\\n', html)  # literal backslash+n
+        return re.sub(r'<[^>]+>', '\n', html)  # literal backslash+n
     except Exception:
         return html
-
 
 # ---------------------- License ----------------------
 
@@ -159,7 +150,6 @@ def verify_gumroad_license(license_key: str) -> bool:
         return False
     return False
 
-
 # ---------------------- Prizes ----------------------
 POWERBALL_PRIZES: Dict[Tuple[int, bool], int | str] = {
     (5, True): "JACKPOT",
@@ -173,13 +163,11 @@ POWERBALL_PRIZES: Dict[Tuple[int, bool], int | str] = {
     (0, True): 4,
 }
 
-
 def prize_for_result(match_white: int, pb_matched: bool, jackpot_estimate: Optional[int]) -> int:
     val = POWERBALL_PRIZES.get((match_white, pb_matched), 0)
     if val == "JACKPOT":
         return int(jackpot_estimate or 0)
     return int(val)
-
 
 # ---------------------- Helpers ----------------------
 
@@ -192,12 +180,10 @@ def to_table(counter: Counter, domain_range: Iterable[int]) -> pd.DataFrame:
         rows.append({"number": n, "count": c, "percent": round(pct, 3)})
     return pd.DataFrame(rows)
 
-
 def freq_counts(df: pd.DataFrame) -> Tuple[Counter, Counter]:
     whites = list(itertools.chain.from_iterable(df.get("W", []).tolist())) if not df.empty else []
     reds = df.get("R", pd.Series([], dtype=int)).tolist() if not df.empty else []
     return Counter(whites), Counter(reds)
-
 
 def pairs_triplets(df: pd.DataFrame) -> Tuple[Counter, Counter]:
     pair_counts, trip_counts = Counter(), Counter()
@@ -209,7 +195,6 @@ def pairs_triplets(df: pd.DataFrame) -> Tuple[Counter, Counter]:
             trip_counts[(a, b, c)] += 1
     return pair_counts, trip_counts
 
-
 def pair_matrix(pair_counts: Counter, max_white: int) -> np.ndarray:
     mat = np.zeros((max_white, max_white), dtype=int)
     for (a, b), cnt in pair_counts.items():
@@ -217,7 +202,6 @@ def pair_matrix(pair_counts: Counter, max_white: int) -> np.ndarray:
             mat[a - 1, b - 1] = cnt
             mat[b - 1, a - 1] = cnt
     return mat
-
 
 # ---------------------- Time ----------------------
 
@@ -233,7 +217,6 @@ def next_powerball_draw(now: Optional[datetime] = None) -> datetime:
     fallback = now + timedelta(days=2)
     return fallback.replace(hour=DRAW_HOUR, minute=DRAW_MIN, second=0, microsecond=0)
 
-
 # ---------------------- Scrape ----------------------
 
 def get_powerball_jackpot_estimate() -> Optional[int]:
@@ -248,7 +231,6 @@ def get_powerball_jackpot_estimate() -> Optional[int]:
     except Exception:
         return None
 
-
 @dataclass
 class LatestDraw:
     date_text: Optional[str]
@@ -257,7 +239,6 @@ class LatestDraw:
     states_match5: List[str]
     tiers: List[Dict[str, object]]
     detail_url: Optional[str]
-
 
 def get_latest_powerball_draw_detail() -> Optional[LatestDraw]:
     try:
@@ -358,17 +339,7 @@ def get_latest_powerball_draw_detail() -> Optional[LatestDraw]:
         detail_url=detail_url,
     )
 
-
 # ---------------------- Data loaders ----------------------
-
-if st is not None:  # pragma: no cover
-    cache_data = st.cache_data
-else:  # testing/CLI fallback
-    def cache_data(*dargs, **dkwargs):
-        def deco(fn):
-            return fn
-        return deco
-
 
 def _parse_whites_red_from_text(s: str) -> Optional[Tuple[List[int], int]]:
     nums = [int(x) for x in re.findall(r"\d+", s)]
@@ -376,7 +347,6 @@ def _parse_whites_red_from_text(s: str) -> Optional[Tuple[List[int], int]]:
         return None
     whites, red = nums[:5], int(nums[5])
     return whites, red
-
 
 def _normalize_df(df: pd.DataFrame, white_max: int, red_max: int, cutoff_date: datetime.date) -> pd.DataFrame:
     if df.empty:
@@ -392,22 +362,31 @@ def _normalize_df(df: pd.DataFrame, white_max: int, red_max: int, cutoff_date: d
     ]
     return df.sort_values("draw_date").reset_index(drop=True)
 
+if st is not None:
+    cache_data = st.cache_data
+else:  # pragma: no cover - testing/CLI fallback
+    def cache_data(*dargs, **dkwargs):
+        def deco(fn):
+            return fn
+        return deco
 
 @cache_data(ttl=600, show_spinner=False)
 def load_powerball() -> pd.DataFrame:
-    """Load Powerball draws (5 whites 1..69, PB 1..26). TX CSV -> NY Open Data fallback."""
     rows: List[Dict[str, int | datetime.date]] = []
-
     # Try Texas CSV (schema may vary)
     try:
         tx = pd.read_csv(TX_PB_CSV, dtype=str, engine="python", on_bad_lines="skip")
         date_col = None
-        num_col = None
         for c in tx.columns:
             if re.search(r"draw\s*date", str(c), re.I):
                 date_col = c
-            if re.search(r"winning\s*numbers", str(c), re.I):
-                num_col = c
+                break
+        num_col = None
+        if date_col is not None:
+            for c in tx.columns:
+                if re.search(r"winning\s*numbers", str(c), re.I):
+                    num_col = c
+                    break
         if date_col is not None and num_col is not None:
             for _, rec in tx.iterrows():
                 try:
@@ -451,7 +430,6 @@ def load_powerball() -> pd.DataFrame:
     df = pd.DataFrame(rows)
     return _normalize_df(df, white_max=69, red_max=26, cutoff_date=MATRIX_CUTOFF_PB)
 
-
 # ---------------------- Weights (from history) ----------------------
 
 def make_weight_arrays(
@@ -494,23 +472,18 @@ def make_weight_arrays(
     r = r / rs if rs > 0 else np.full(red_max, 1.0 / red_max)
     return w, r
 
-
 # ---------------------- Simulation ----------------------
-
 @dataclass(frozen=True)
 class Pick:
     whites: Tuple[int, int, int, int, int]
     red: int
-
     def normalized(self) -> "Pick":
         return Pick(tuple(sorted(self.whites)), int(self.red))
 
-
 # Official-ish Power Play weights (approx.)
-POWER_PLAY_10X_CAP = 150_000_000  # 10x available only when jackpot <= cap
+POWER_PLAY_10X_CAP = 150_000_000  # 10× available only when jackpot ≤ cap
 PP_WEIGHTS_WITH_10X = {2: 0.557, 3: 0.303, 4: 0.070, 5: 0.047, 10: 0.023}
 PP_WEIGHTS_NO_10X   = {2: 0.571, 3: 0.309, 4: 0.069, 5: 0.051}
-
 
 def _score_pick(draw_w: Sequence[int], draw_r: int, pick: Pick, jackpot_estimate: Optional[int]) -> Tuple[Tuple[int, bool], int]:
     w_matches = len(set(draw_w).intersection(pick.whites))
@@ -518,14 +491,12 @@ def _score_pick(draw_w: Sequence[int], draw_r: int, pick: Pick, jackpot_estimate
     prize = prize_for_result(w_matches, r_match, jackpot_estimate)
     return (w_matches, r_match), prize
 
-
 def _effective_allow_10x(pp_allow_10x: bool, pp_auto_10x_cap: bool, jackpot_estimate: Optional[int], cap: int) -> bool:
     if not pp_allow_10x:
         return False
     if not pp_auto_10x_cap:
         return True
     return (jackpot_estimate or 0) <= cap
-
 
 def _draw_power_play_multiplier(
     rng: np.random.Generator,
@@ -550,7 +521,6 @@ def _draw_power_play_multiplier(
     ps = [p / total for p in ps]
     return int(rng.choice(options, p=ps))
 
-
 def _apply_power_play(prize: int, tier: Tuple[int, bool], multiplier: int) -> int:
     w_matches, r_match = tier
     if w_matches == 5 and not r_match:
@@ -559,12 +529,10 @@ def _apply_power_play(prize: int, tier: Tuple[int, bool], multiplier: int) -> in
         return prize
     return int(prize * multiplier)
 
-
 def _generate_pick_uniform(rng: np.random.Generator, white_max: int, red_max: int) -> Tuple[List[int], int]:
     whites = sorted(rng.choice(np.arange(1, white_max + 1), size=5, replace=False).tolist())
     red = int(rng.integers(1, red_max + 1))
     return whites, red
-
 
 def _generate_pick_weighted(
     rng: np.random.Generator,
@@ -582,7 +550,6 @@ def _generate_pick_weighted(
     else:
         red = int(rng.choice(np.arange(1, red_max + 1), p=r_p))
     return whites, red
-
 
 def simulate_strategy(
     picks: Sequence[Tuple[Sequence[int], int]] | Sequence[Pick],
@@ -712,7 +679,6 @@ def simulate_strategy(
     }
     return result
 
-
 # ---------------------- CSV helpers ----------------------
 
 def simulation_to_csvs(res: Dict[str, object], *, draws: int, num_picks: int) -> Tuple[pd.DataFrame, pd.DataFrame]:
@@ -737,8 +703,50 @@ def simulation_to_csvs(res: Dict[str, object], *, draws: int, num_picks: int) ->
     }])
     return tiers_df, metrics_df
 
+# ---------------------- Visual styling helpers ----------------------
 
-# ---------------------- UI helpers ----------------------
+def _inject_global_css():  # pragma: no cover - UI only
+    if st is None:
+        return
+    st.markdown(
+        """
+        <style>
+        .app-title { letter-spacing: 0.3px; }
+        .section-label { font-weight:600; opacity:.8; margin: 6px 0 2px; }
+        .ticket-grid { display:grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap:12px; }
+        .ticket-card { background: rgba(0,0,0,.04); border-radius:16px; padding:12px 14px; border:1px solid rgba(255,255,255,0.06); box-shadow: 0 1px 2px rgba(0,0,0,.06); }
+        [data-testid="stAppViewContainer"][data-theme="light"] .ticket-card { background:#ffffff; border-color: rgba(0,0,0,.06); }
+        .ticket-title { font-weight:600; font-size:.85rem; margin-bottom:8px; opacity:.8; }
+        .ticket-balls { display:flex; gap:8px; flex-wrap: wrap; align-items:center; }
+        .ball { width:38px; height:38px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-weight:700; border:2px solid rgba(0,0,0,.1); box-shadow: inset 0 -3px 4px rgba(0,0,0,.15); }
+        .ball.white { background: radial-gradient(circle at 30% 30%, #ffffff, #e8e8e8); color:#111; }
+        .ball.red { background: radial-gradient(circle at 30% 30%, #ff6161, #d90429); color:#fff; border-color: rgba(255,0,0,.25); }
+        .pill { display:inline-block; padding:2px 8px; border-radius:999px; font-size:.75rem; background:rgba(0,0,0,.06); }
+        [data-testid="stAppViewContainer"][data-theme="dark"] .pill { background: rgba(255,255,255,.06); }
+        .sticky-run { position: sticky; top: 0; z-index: 5; backdrop-filter: blur(6px); padding: 6px 0 2px; }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _ticket_card_html(whites: Sequence[int], red: int, title: Optional[str] = None) -> str:
+    whites = list(sorted(whites))
+    title_html = f'<div class="ticket-title">{title}</div>' if title else ''
+    balls = ''.join([f'<div class="ball white">{w}</div>' for w in whites]) + f'<div class="ball red">{red}</div>'
+    return f'<div class="ticket-card">{title_html}<div class="ticket-balls">{balls}</div></div>'
+
+
+def render_ticket_grid(picks: List[Tuple[Sequence[int], int]], title_prefix: str = "Ticket") -> None:  # pragma: no cover - UI only
+    if st is None:
+        return
+    cards = []
+    for i, (w, r) in enumerate(picks, 1):
+        cards.append(_ticket_card_html(w, r, f"{title_prefix} #{i}"))
+    html = '<div class="ticket-grid">' + ''.join(cards) + '</div>'
+    st.markdown(html, unsafe_allow_html=True)
+
+# ---------------------- UI ----------------------
 
 def _parse_user_picks(text: str) -> List[Tuple[List[int], int]]:
     picks: List[Tuple[List[int], int]] = []
@@ -764,7 +772,6 @@ def _parse_user_picks(text: str) -> List[Tuple[List[int], int]]:
         picks.append((whites, red))
     return picks
 
-
 def _format_timedelta(td: timedelta) -> str:
     total = int(td.total_seconds())
     if total < 0:
@@ -773,13 +780,11 @@ def _format_timedelta(td: timedelta) -> str:
     m, s = divmod(rem, 60)
     return f"{h:02d}:{m:02d}:{s:02d}"
 
-
 def _picks_to_csv_rows(picks: List[Tuple[List[int], int]]) -> pd.DataFrame:
     rows = []
     for whites, r in picks:
         rows.append({"w1": whites[0], "w2": whites[1], "w3": whites[2], "w4": whites[3], "w5": whites[4], "r": r})
     return pd.DataFrame(rows)
-
 
 def _parse_picks_csv(file) -> List[Tuple[List[int], int]]:
     try:
@@ -822,13 +827,6 @@ def _parse_picks_csv(file) -> List[Tuple[List[int], int]]:
             out.extend(_parse_user_picks(str(rec[cols["pick"]])))
     return out
 
-
-def _tz_mode_str() -> str:
-    return "IANA America/New_York" if isinstance(ET, ZoneInfo) else "Fixed -05:00 fallback"
-
-
-# ---------------------- Streamlit App ----------------------
-
 def main() -> None:  # pragma: no cover - UI only
     if st is None:
         # CLI fallback: run a tiny demo instead of raising in non-Streamlit envs
@@ -846,8 +844,9 @@ def main() -> None:  # pragma: no cover - UI only
             print("CLI demo failed:", e)
         return
 
-    st.set_page_config(page_title="PullMyBallsLotto - Lottery Stats Explorer", layout="wide")
-    st.title("PullMyBallsLotto - Lottery Stats Explorer")
+    st.set_page_config(page_title="PullMyBallsLotto • Lottery Stats Explorer", layout="wide")
+    _inject_global_css()
+    st.title("PullMyBallsLotto • Lottery Stats Explorer")
     st.caption("Educational only. Not affiliated with any lottery commission.")
 
     # Optional license gate (soft)
@@ -879,7 +878,7 @@ def main() -> None:  # pragma: no cover - UI only
         df_pb = load_powerball()
     st.write(f"Powerball draws: **{len(df_pb)}**")
 
-    tab_overview, tab_stats, tab_sim = st.tabs(["Overview", "Stats", "Simulator"])
+    tab_overview, tab_stats, tab_sim = st.tabs(["Overview", "Stats (PB)", "Simulator"])
 
     with tab_overview:
         ld = get_latest_powerball_draw_detail()
@@ -897,7 +896,7 @@ def main() -> None:  # pragma: no cover - UI only
                 st.markdown(f"[Open detail page]({ld.detail_url})")
         else:
             st.warning("Could not retrieve the latest draw detail right now.")
-        st.caption(f"HTML parser: {'BeautifulSoup' if BS4_AVAILABLE else 'regex fallback'} · Timezone: {_tz_mode_str()}")
+        st.caption(f"HTML parser: {'BeautifulSoup' if BS4_AVAILABLE else 'regex fallback'}")
         st.markdown(f"Ticket cutoff varies by state. Example: [Florida info]({FL_PB}).")
 
     with tab_stats:
@@ -918,11 +917,11 @@ def main() -> None:  # pragma: no cover - UI only
                 st.write("Cold 10:", reds_tbl.sort_values("count", ascending=True).head(10)[["number", "count"]])
 
     with tab_sim:
-        st.subheader("EZ-pick simulation")
+        st.subheader("EZ-pick simulation (uniform RNG)")
         # --- Pick Builder ---
         st.markdown("**Pick Builder (optional)**")
         if "built_picks" not in st.session_state:
-            st.session_state["built_picks"] = []  # list[(whites, r)]
+            st.session_state["built_picks"] = []  # list of (whites, r)
         colb1, colb2, colb3 = st.columns([3, 2, 2])
         with colb1:
             sel_whites = st.multiselect("Select 5 white balls (1–69)", options=list(range(1, 70)), max_selections=5)
@@ -951,6 +950,11 @@ def main() -> None:  # pragma: no cover - UI only
                 file_name="picks.csv",
                 mime="text/csv",
             )
+
+        # Visualize built picks as lotto cards
+        if st.session_state.get("built_picks"):
+            st.markdown('<div class="section-label">Your picks (lotto card view)</div>', unsafe_allow_html=True)
+            render_ticket_grid([(w, r) for (w, r) in st.session_state["built_picks"]], title_prefix="Your pick")
 
         st.markdown("**Or paste picks**")
         example = "1 2 3 4 5 | 6\n7, 8, 9, 10, 11 12"
@@ -987,6 +991,7 @@ def main() -> None:  # pragma: no cover - UI only
         with colap4:
             auto_each_draw = st.checkbox("Re-pick every draw (advanced)", value=False, disabled=not use_auto_pick)
 
+        # Recency window slider (only for historical modes)
         recency_max = int(len(df_pb)) if isinstance(df_pb, pd.DataFrame) else 0
         recency_enabled = use_auto_pick and auto_weight_ui.startswith("Historical") and recency_max > 0
         recency_n = st.slider(
@@ -998,6 +1003,7 @@ def main() -> None:  # pragma: no cover - UI only
             disabled=not recency_enabled,
         )
 
+        # Show weight charts when historical mode is selected
         if recency_enabled:
             try:
                 cold_flag = auto_weight_ui.startswith("Historical (cold")
@@ -1005,6 +1011,7 @@ def main() -> None:  # pragma: no cover - UI only
                     df_pb, white_max=69, red_max=26, smoothing=1.0, cold=cold_flag, recency_n=recency_n
                 )
                 if MPL_AVAILABLE:
+                    # Whites: show top 20 by weight
                     idx_w = np.argsort(w_arr)[::-1][:20]
                     fig1 = plt.figure()
                     plt.bar([int(i + 1) for i in idx_w], w_arr[idx_w])
@@ -1012,7 +1019,7 @@ def main() -> None:  # pragma: no cover - UI only
                     plt.xlabel("Number")
                     plt.ylabel("Probability")
                     st.pyplot(fig1, clear_figure=True)
-
+                    # Reds: show top 10 by weight
                     idx_r = np.argsort(r_arr)[::-1][:10]
                     fig2 = plt.figure()
                     plt.bar([int(i + 1) for i in idx_r], r_arr[idx_r])
@@ -1034,7 +1041,7 @@ def main() -> None:  # pragma: no cover - UI only
         # Preview auto-picked tickets when not re-picking each draw
         if use_auto_pick and not auto_each_draw:
             try:
-                rng_prev = np.random.default_rng(seed or None)
+                rng_prev = np.random.default_rng(None)
                 cold_flag = auto_weight_ui.startswith("Historical (cold")
                 if auto_weight_ui.startswith("Historical"):
                     w_arr, r_arr = make_weight_arrays(
@@ -1081,8 +1088,15 @@ def main() -> None:  # pragma: no cover - UI only
         seed = st.number_input("Seed (optional)", value=0, min_value=0, step=1)
         jp_override = st.number_input("Jackpot estimate (override)", value=int(jp or 0), min_value=0, step=1)
 
-        if st.button("Run simulation", type="primary"):
-            if not unified and not use_auto_pick:
+        # Run button (main) + optional sidebar button for easier access
+        run_click_main = st.button("Run simulation", type="primary")
+        run_click_sidebar = st.sidebar.button("🚀 Run simulation", type="primary")
+        if run_click_main or run_click_sidebar:
+            st.session_state["do_run"] = True
+
+        if st.session_state.get("do_run"):
+            st.session_state["do_run"] = False
+            if not unified and not (use_auto_pick):
                 st.error("Please enter at least one valid pick or enable Auto-pick.")
             else:
                 try:
@@ -1093,7 +1107,12 @@ def main() -> None:  # pragma: no cover - UI only
                         try:
                             cold_flag = auto_weight_ui.startswith("Historical (cold")
                             auto_w, auto_r = make_weight_arrays(
-                                df_pb, white_max=69, red_max=26, smoothing=1.0, cold=cold_flag, recency_n=recency_n
+                                df_pb,
+                                white_max=69,
+                                red_max=26,
+                                smoothing=1.0,
+                                cold=cold_flag,
+                                recency_n=recency_n,
                             )
                         except Exception:
                             auto_w, auto_r = None, None
@@ -1123,6 +1142,30 @@ def main() -> None:  # pragma: no cover - UI only
                     with met3:
                         st.metric("Net EV per draw", f"${res['overall']['net_ev_per_draw']:.4f}")
 
+                    # Show tickets visually like real lotto cards
+                    try:
+                        picks_payload = res.get("by_pick", [])
+                        if picks_payload:
+                            cards = [ (bp["pick"]["W"], int(bp["pick"]["R"])) for bp in picks_payload ]
+                            st.markdown('<div class="section-label">Tickets used in this run</div>', unsafe_allow_html=True)
+                            render_ticket_grid(cards, title_prefix="Played")
+                        elif use_auto_pick and auto_each_draw:
+                            # Sample visualization when re-picking each draw
+                            rng_sample = np.random.default_rng(seed or None)
+                            sample = []
+                            for _ in range(min(int(auto_pick_n), 8)):
+                                if auto_weight_ui.startswith("Historical"):
+                                    ws, rr = _generate_pick_weighted(rng_sample, 69, 26, auto_w, auto_r)
+                                else:
+                                    ws, rr = _generate_pick_uniform(rng_sample, 69, 26)
+                                sample.append((ws, rr))
+                            if sample:
+                                st.markdown('<div class="section-label">Sample tickets (re-picked each draw)</div>', unsafe_allow_html=True)
+                                render_ticket_grid(sample, title_prefix="Sample")
+                    except Exception:
+                        pass
+
+                    # Raw JSON (for power users)
                     st.json(res)
 
                     if licensed:
@@ -1145,7 +1188,6 @@ def main() -> None:  # pragma: no cover - UI only
                 except Exception as e:
                     st.exception(e)
 
-
 if __name__ == "__main__":
     if st is not None:
         main()
@@ -1157,3 +1199,4 @@ if __name__ == "__main__":
             print("CLI demo:", {"draws": out["draws"], "gross_ev_per_draw": out["overall"]["gross_ev_per_draw"]})
         except Exception as e:
             print("CLI demo failed:", e)
+
